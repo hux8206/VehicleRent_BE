@@ -373,40 +373,42 @@ export class BookingsService {
 
   /** Customer hủy đơn (Hỗ trợ cả đơn Pending 0 và Confirmed 1 có yêu cầu hoàn cọc) */
   async cancelBooking(customerId: number, bookingId: number, dto?: CancelBookingDto) {
-    const booking = await this.prisma.booking.findUnique({
-      where: { id: bookingId },
-      include: {
-        store: true,
-        bookingDetails: true,
-        payments: true,
-      },
-    });
-    if (!booking) throw new NotFoundException('Đơn thuê không tồn tại');
-    if (booking.customerId !== customerId)
-      throw new ForbiddenException('Bạn không có quyền hủy đơn thuê này');
-    if (booking.status === 5)
-      throw new BadRequestException('Đơn thuê này đã được hủy trước đó');
-    if (booking.status !== 0 && booking.status !== 1 && booking.status !== 2)
-      throw new BadRequestException('Chỉ có thể hủy đơn khi đang chờ thanh toán hoặc đã cọc chờ nhận xe');
-
-    // Nếu đơn đã cọc (status 1: Confirmed), bắt buộc phải có lý do và thông tin ngân hàng để hoàn tiền cọc
-    if (booking.status === 1) {
-      if (!dto?.reason?.trim()) {
-        throw new BadRequestException('Vui lòng cung cấp lý do hủy đơn');
-      }
-      if (
-        !dto?.bankName?.trim() ||
-        !dto?.bankAccountNumber?.trim() ||
-        !dto?.bankAccountName?.trim()
-      ) {
-        throw new BadRequestException(
-          'Vui lòng nhập đầy đủ thông tin tài khoản ngân hàng để hệ thống hoàn tiền cọc về cho bạn',
-        );
-      }
-    }
-
     return this.prisma.$transaction(async (tx) => {
-      // 1. Hoàn trả tất cả xe vật lý đã giữ về trạng thái Sẵn sàng (status = 0)
+      // 1. Khóa và đọc lại đơn trong transaction (Chống Race Condition & Double Cancellation)
+      const booking = await tx.booking.findUnique({
+        where: { id: bookingId },
+        include: {
+          store: true,
+          bookingDetails: true,
+          payments: true,
+        },
+      });
+
+      if (!booking) throw new NotFoundException('Đơn thuê không tồn tại');
+      if (booking.customerId !== customerId)
+        throw new ForbiddenException('Bạn không có quyền hủy đơn thuê này');
+      if (booking.status === 5)
+        throw new BadRequestException('Đơn thuê này đã được hủy trước đó');
+      if (booking.status !== 0 && booking.status !== 1 && booking.status !== 2)
+        throw new BadRequestException('Chỉ có thể hủy đơn khi đang chờ thanh toán hoặc đã cọc chờ nhận xe');
+
+      // Nếu đơn đã cọc (status 1: Confirmed), bắt buộc phải có lý do và thông tin ngân hàng để hoàn tiền cọc
+      if (booking.status === 1) {
+        if (!dto?.reason?.trim()) {
+          throw new BadRequestException('Vui lòng cung cấp lý do hủy đơn');
+        }
+        if (
+          !dto?.bankName?.trim() ||
+          !dto?.bankAccountNumber?.trim() ||
+          !dto?.bankAccountName?.trim()
+        ) {
+          throw new BadRequestException(
+            'Vui lòng nhập đầy đủ thông tin tài khoản ngân hàng để hệ thống hoàn tiền cọc về cho bạn',
+          );
+        }
+      }
+
+      // 2. Hoàn trả tất cả xe vật lý đã giữ về trạng thái Sẵn sàng (status = 0)
       for (const detail of booking.bookingDetails) {
         if (detail.vehicleItemId) {
           await tx.vehicleItem.updateMany({
@@ -416,7 +418,7 @@ export class BookingsService {
         }
       }
 
-      // 2. Nếu đơn đã thanh toán cọc (status = 1), tính toán tỷ lệ hoàn cọc theo chính sách sàn:
+      // 3. Nếu đơn đã thanh toán cọc (status = 1), tính toán tỷ lệ hoàn cọc theo chính sách sàn:
       // - Hủy trước giờ nhận xe >= 24h: Hoàn 100% tiền cọc (Miễn phí hủy)
       // - Hủy trước giờ nhận xe từ 6h đến < 24h: Hoàn 50% tiền cọc (Đối tác giữ 50% phí bù đắp)
       // - Hủy trước giờ nhận xe < 6h: Không hoàn lại tiền cọc (0%)
@@ -442,8 +444,16 @@ export class BookingsService {
           initialRefundStatus = 2; // Từ chối hoàn do cận giờ
         }
 
-        // Khấu trừ số tiền hoàn trả thực tế từ ví đối tác (đối tác giữ phần còn lại)
-        if (refundAmountNum > 0) {
+        // Idempotency: Kiểm tra xem đã từng thu hồi tiền hoàn cọc của đơn này trong ví đối tác chưa
+        const existingRefundHistory = await tx.walletHistory.findFirst({
+          where: {
+            bookingId: booking.id,
+            type: 2, // Refund
+          },
+        });
+
+        // Khấu trừ số tiền hoàn trả thực tế từ ví đối tác (đối tác giữ phần còn lại) nếu chưa từng trừ
+        if (refundAmountNum > 0 && !existingRefundHistory) {
           const wallet = await tx.partnerWallet.findUnique({
             where: { partnerId: booking.store.partnerId },
           });
@@ -472,7 +482,7 @@ export class BookingsService {
         }
       }
 
-      // 3. Cập nhật Booking sang trạng thái Đã hủy (status = 5) kèm thông tin hoàn cọc
+      // 4. Cập nhật Booking sang trạng thái Đã hủy (status = 5) kèm thông tin hoàn cọc
       const baseReason = dto?.reason?.trim() || 'Khách hàng hủy đơn giữ chỗ';
       const fullReason = policyNote ? `${baseReason} • ${policyNote}` : baseReason;
 
@@ -514,29 +524,30 @@ export class BookingsService {
 
   /** Flow 6a: Partner bàn giao xe — gán biển số + chuyển sang ActiveRental */
   async handoverVehicle(partnerId: number, bookingId: number, vehicleItemId: number) {
-    const booking = await this.prisma.booking.findUnique({
-      where: { id: bookingId },
-      include: { store: true, bookingDetails: true },
-    });
-    if (!booking) throw new NotFoundException('Đơn thuê không tồn tại');
-    if (booking.store.partnerId !== partnerId)
-      throw new ForbiddenException('Đơn thuê không thuộc cửa hàng của bạn');
-    if (booking.status !== 1)
-      throw new BadRequestException('Đơn phải ở trạng thái Confirmed (1) mới có thể bàn giao xe');
-
-    const detail = booking.bookingDetails[0];
-    const vehicleItem = await this.prisma.vehicleItem.findUnique({ where: { id: vehicleItemId } });
-    if (!vehicleItem) throw new NotFoundException('Xe (biển số) không tồn tại');
-    if (vehicleItem.modelId !== detail.modelId)
-      throw new BadRequestException('Biển số xe không thuộc dòng xe trong đơn');
-
-    // Cho phép xe đang ở trạng thái Available (0) HOẶC xe đang được giữ riêng cho đơn này (1)
-    const isPreAssigned = vehicleItem.status === 1 && detail.vehicleItemId === vehicleItem.id;
-    if (vehicleItem.status !== 0 && !isPreAssigned) {
-      throw new BadRequestException('Xe này không ở trạng thái sẵn sàng hoặc đang giữ cho đơn này');
-    }
-
     return this.prisma.$transaction(async (tx) => {
+      // 1. Khóa và đọc lại đơn trong transaction (Chống Race Condition & Double Handover)
+      const booking = await tx.booking.findUnique({
+        where: { id: bookingId },
+        include: { store: true, bookingDetails: true },
+      });
+      if (!booking) throw new NotFoundException('Đơn thuê không tồn tại');
+      if (booking.store.partnerId !== partnerId)
+        throw new ForbiddenException('Đơn thuê không thuộc cửa hàng của bạn');
+      if (booking.status !== 1)
+        throw new BadRequestException('Đơn phải ở trạng thái Confirmed (1) mới có thể bàn giao xe');
+
+      const detail = booking.bookingDetails[0];
+      const vehicleItem = await tx.vehicleItem.findUnique({ where: { id: vehicleItemId } });
+      if (!vehicleItem) throw new NotFoundException('Xe (biển số) không tồn tại');
+      if (vehicleItem.modelId !== detail.modelId)
+        throw new BadRequestException('Biển số xe không thuộc dòng xe trong đơn');
+
+      // Cho phép xe đang ở trạng thái Available (0) HOẶC xe đang được giữ riêng cho đơn này (1)
+      const isPreAssigned = vehicleItem.status === 1 && detail.vehicleItemId === vehicleItem.id;
+      if (vehicleItem.status !== 0 && !isPreAssigned) {
+        throw new BadRequestException('Xe này không ở trạng thái sẵn sàng hoặc đang giữ cho đơn này');
+      }
+
       // Nếu nhân viên chọn bàn giao xe khác xe đã giữ ban đầu, hoàn trả xe cũ về Sẵn sàng (0)
       if (detail.vehicleItemId && detail.vehicleItemId !== vehicleItemId) {
         await tx.vehicleItem.update({
@@ -556,9 +567,16 @@ export class BookingsService {
 
       // ── Khấu trừ hoa hồng sàn khi XÁC NHẬN KHÁCH ĐÃ NHẬN XE ───────────────
       // Chỉ khi đối tác bàn giao xe thành công thì sàn mới trừ hoa hồng.
-      // Nếu khách không nhận xe thì tiền cọc vẫn thuộc về đối tác mà không bị trừ hoa hồng.
+      // Idempotency: Kiểm tra xem đã từng trừ hoa hồng của đơn này chưa (Chống trừ 2 lần)
+      const existingCommission = await tx.walletHistory.findFirst({
+        where: {
+          bookingId: booking.id,
+          type: 1, // Commission_Deduction
+        },
+      });
+
       const commission = Number(booking.commissionAmount);
-      if (commission > 0) {
+      if (commission > 0 && !existingCommission) {
         const wallet = await tx.partnerWallet.findUnique({
           where: { partnerId: booking.store.partnerId },
         });
@@ -592,19 +610,20 @@ export class BookingsService {
 
   /** Flow 6b: Partner xác nhận khách trả xe — hoàn thành đơn */
   async completeBooking(partnerId: number, bookingId: number) {
-    const booking = await this.prisma.booking.findUnique({
-      where: { id: bookingId },
-      include: { store: true, bookingDetails: { include: { vehicleItem: true } } },
-    });
-    if (!booking) throw new NotFoundException('Đơn thuê không tồn tại');
-    if (booking.store.partnerId !== partnerId)
-      throw new ForbiddenException('Đơn thuê không thuộc cửa hàng của bạn');
-    if (booking.status !== 3)
-      throw new BadRequestException('Đơn phải ở trạng thái ActiveRental (3) mới có thể hoàn thành');
-
-    const detail = booking.bookingDetails[0];
-
     return this.prisma.$transaction(async (tx) => {
+      // Khóa và đọc lại đơn trong transaction (Chống Race Condition & Double Completion)
+      const booking = await tx.booking.findUnique({
+        where: { id: bookingId },
+        include: { store: true, bookingDetails: { include: { vehicleItem: true } } },
+      });
+      if (!booking) throw new NotFoundException('Đơn thuê không tồn tại');
+      if (booking.store.partnerId !== partnerId)
+        throw new ForbiddenException('Đơn thuê không thuộc cửa hàng của bạn');
+      if (booking.status !== 3)
+        throw new BadRequestException('Đơn phải ở trạng thái ActiveRental (3) mới có thể hoàn thành');
+
+      const detail = booking.bookingDetails[0];
+
       if (detail?.vehicleItemId) {
         await tx.vehicleItem.update({
           where: { id: detail.vehicleItemId },

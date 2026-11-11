@@ -41,10 +41,12 @@ export class AllExceptionsFilter implements ExceptionFilter {
       }
     }
 
+    const isProd = process.env.NODE_ENV === 'production';
     response.status(status).json({
       statusCode: status,
       timestamp: new Date().toISOString(),
-      path: request.url,
+      // Ẩn path URL trong production để tránh rò rỉ cấu trúc API
+      ...(isProd ? {} : { path: request.url }),
       message,
     });
   }
