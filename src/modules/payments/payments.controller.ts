@@ -223,6 +223,36 @@ export class AdminTransactionsController {
       toDate,
     });
   }
+
+  @Get('refunds')
+  @ApiOperation({ summary: 'Xem tất cả yêu cầu hoàn tiền cọc của khách hàng' })
+  @ApiQuery({ name: 'search', required: false, type: String })
+  @ApiQuery({ name: 'status', required: false, type: Number })
+  @ApiQuery({ name: 'fromDate', required: false, type: String })
+  @ApiQuery({ name: 'toDate', required: false, type: String })
+  getRefunds(
+    @Query('search') search?: string,
+    @Query('status') status?: string,
+    @Query('fromDate') fromDate?: string,
+    @Query('toDate') toDate?: string,
+  ) {
+    const statusNum = status !== undefined && status !== '' ? parseInt(status, 10) : undefined;
+    return this.paymentsService.getAllRefundRequestsForAdmin({
+      search,
+      status: statusNum,
+      fromDate,
+      toDate,
+    });
+  }
+
+  @Patch('refunds/:bookingId/status')
+  @ApiOperation({ summary: 'Duyệt hoặc từ chối hoàn tiền cọc cho khách hàng' })
+  reviewRefund(
+    @Param('bookingId', ParseIntPipe) bookingId: number,
+    @Body() dto: { refundStatus: number; adminNote?: string },
+  ) {
+    return this.paymentsService.reviewRefundRequestForAdmin(bookingId, dto);
+  }
 }
 
 // ─── PUBLIC: PayOS Webhook receiver ───────────────────────────────────────────

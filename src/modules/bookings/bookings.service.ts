@@ -416,48 +416,77 @@ export class BookingsService {
         }
       }
 
-      // 2. Nếu đơn đã thanh toán cọc (status = 1), hoàn trừ ví đối tác
+      // 2. Nếu đơn đã thanh toán cọc (status = 1), tính toán tỷ lệ hoàn cọc theo chính sách sàn:
+      // - Hủy trước giờ nhận xe >= 24h: Hoàn 100% tiền cọc (Miễn phí hủy)
+      // - Hủy trước giờ nhận xe từ 6h đến < 24h: Hoàn 50% tiền cọc (Đối tác giữ 50% phí bù đắp)
+      // - Hủy trước giờ nhận xe < 6h: Không hoàn lại tiền cọc (0%)
+      let refundAmountNum = 0;
+      let policyNote = '';
+      let initialRefundStatus: number | null = null;
+
       if (booking.status === 1) {
-        const wallet = await tx.partnerWallet.findUnique({
-          where: { partnerId: booking.store.partnerId },
-        });
+        const totalDeposit = Number(booking.depositAmount);
+        const hoursToStart = (new Date(booking.startTime).getTime() - Date.now()) / (1000 * 60 * 60);
 
-        if (wallet) {
-          const depositNum = Number(booking.depositAmount);
-          const currentBal = Number(wallet.balance);
-          const newBal = currentBal - depositNum;
+        if (hoursToStart >= 24) {
+          refundAmountNum = totalDeposit;
+          policyNote = 'Hủy trước >= 24h (Hoàn 100% cọc)';
+          initialRefundStatus = 0; // Chờ Admin chuyển khoản
+        } else if (hoursToStart >= 6) {
+          refundAmountNum = Math.round(totalDeposit * 0.5);
+          policyNote = 'Hủy trước 6h - 24h (Hoàn 50% cọc, nhà xe giữ 50%)';
+          initialRefundStatus = 0; // Chờ Admin chuyển khoản
+        } else {
+          refundAmountNum = 0;
+          policyNote = 'Hủy dưới 6h trước giờ nhận (Không hoàn cọc theo quy định)';
+          initialRefundStatus = 2; // Từ chối hoàn do cận giờ
+        }
 
-          await tx.partnerWallet.update({
-            where: { id: wallet.id },
-            data: { balance: newBal },
+        // Khấu trừ số tiền hoàn trả thực tế từ ví đối tác (đối tác giữ phần còn lại)
+        if (refundAmountNum > 0) {
+          const wallet = await tx.partnerWallet.findUnique({
+            where: { partnerId: booking.store.partnerId },
           });
 
-          await tx.walletHistory.create({
-            data: {
-              walletId: wallet.id,
-              bookingId: booking.id,
-              type: 2, // Refund
-              amount: depositNum,
-              balanceBefore: currentBal,
-              balanceAfter: newBal,
-              description: `Thu hồi tiền cọc do khách hủy đơn ${booking.bookingCode} (-${depositNum.toLocaleString('vi-VN')} đ)`,
-            },
-          });
+          if (wallet) {
+            const currentBal = Number(wallet.balance);
+            const newBal = currentBal - refundAmountNum;
+
+            await tx.partnerWallet.update({
+              where: { id: wallet.id },
+              data: { balance: newBal },
+            });
+
+            await tx.walletHistory.create({
+              data: {
+                walletId: wallet.id,
+                bookingId: booking.id,
+                type: 2, // Refund
+                amount: refundAmountNum,
+                balanceBefore: currentBal,
+                balanceAfter: newBal,
+                description: `Thu hồi tiền hoàn cọc đơn ${booking.bookingCode} (-${refundAmountNum.toLocaleString('vi-VN')} đ) [${policyNote}]`,
+              },
+            });
+          }
         }
       }
 
       // 3. Cập nhật Booking sang trạng thái Đã hủy (status = 5) kèm thông tin hoàn cọc
+      const baseReason = dto?.reason?.trim() || 'Khách hàng hủy đơn giữ chỗ';
+      const fullReason = policyNote ? `${baseReason} • ${policyNote}` : baseReason;
+
       return tx.booking.update({
         where: { id: bookingId },
         data: {
           status: 5, // Cancelled
-          cancelReason: dto?.reason?.trim() || 'Khách hàng hủy đơn giữ chỗ',
+          cancelReason: fullReason,
           cancelTime: new Date(),
-          refundStatus: booking.status === 1 ? 0 : null, // 0: Chờ hoàn cọc
+          refundStatus: initialRefundStatus,
           refundBankName: dto?.bankName?.trim() || null,
           refundAccountNumber: dto?.bankAccountNumber?.trim() || null,
           refundAccountName: dto?.bankAccountName?.trim()?.toUpperCase() || null,
-          refundAmount: booking.status === 1 ? booking.depositAmount : null,
+          refundAmount: booking.status === 1 ? refundAmountNum : null,
         },
       });
     });

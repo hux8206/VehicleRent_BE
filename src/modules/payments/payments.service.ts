@@ -969,5 +969,148 @@ export class PaymentsService {
       };
     });
   }
+
+  // ─── ADMIN: Quản lý Yêu cầu Hoàn tiền Cọc (Refund Requests) ─────────────
+
+  async getAllRefundRequestsForAdmin(query?: {
+    search?: string;
+    status?: number;
+    fromDate?: string;
+    toDate?: string;
+  }) {
+    const where: any = {
+      status: 5, // Đơn đã hủy
+      OR: [
+        { refundAmount: { not: null } },
+        { refundStatus: { not: null } },
+        { refundBankName: { not: null } },
+      ],
+    };
+
+    if (query?.status !== undefined) {
+      where.refundStatus = query.status;
+    }
+
+    if (query?.fromDate || query?.toDate) {
+      where.cancelTime = {};
+      if (query.fromDate) where.cancelTime.gte = new Date(query.fromDate);
+      if (query.toDate) {
+        const to = new Date(query.toDate);
+        to.setHours(23, 59, 59, 999);
+        where.cancelTime.lte = to;
+      }
+    }
+
+    if (query?.search) {
+      const s = query.search.trim();
+      where.AND = [
+        {
+          OR: [
+            { bookingCode: { contains: s } },
+            { customer: { fullName: { contains: s } } },
+            { customer: { phone: { contains: s } } },
+            { refundAccountNumber: { contains: s } },
+            { refundAccountName: { contains: s } },
+            { refundBankName: { contains: s } },
+            { store: { storeName: { contains: s } } },
+          ],
+        },
+      ];
+    }
+
+    return this.prisma.booking.findMany({
+      where,
+      include: {
+        customer: { select: { id: true, fullName: true, phone: true, email: true } },
+        store: {
+          select: {
+            id: true,
+            storeName: true,
+            address: true,
+            phoneContact: true,
+            partner: { select: { id: true, fullName: true, phone: true } },
+          },
+        },
+        bookingDetails: {
+          include: {
+            model: { select: { id: true, name: true, brand: true, type: true } },
+          },
+        },
+        payments: true,
+      },
+      orderBy: { cancelTime: 'desc' },
+      take: 200,
+    });
+  }
+
+  async reviewRefundRequestForAdmin(
+    bookingId: number,
+    dto: { refundStatus: number; adminNote?: string },
+  ) {
+    const booking = await this.prisma.booking.findUnique({
+      where: { id: bookingId },
+      include: { store: true },
+    });
+
+    if (!booking) throw new NotFoundException('Đơn thuê không tồn tại');
+    if (booking.status !== 5) {
+      throw new BadRequestException('Chỉ có thể xử lý hoàn tiền cho đơn đã hủy');
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      // Nếu từ chối hoàn cọc (refundStatus = 2) và trước đó đã trừ tiền cọc:
+      // Hoàn trả cọc lại cho ví đối tác nhà xe
+      if (dto.refundStatus === 2 && booking.refundAmount && Number(booking.refundAmount) > 0) {
+        const partnerWallet = await tx.partnerWallet.findUnique({
+          where: { partnerId: booking.store.partnerId },
+        });
+
+        if (partnerWallet) {
+          const currentBal = Number(partnerWallet.balance);
+          const refundAmt = Number(booking.refundAmount);
+          const newBal = currentBal + refundAmt;
+
+          await tx.partnerWallet.update({
+            where: { id: partnerWallet.id },
+            data: { balance: newBal },
+          });
+
+          await tx.walletHistory.create({
+            data: {
+              walletId: partnerWallet.id,
+              bookingId: booking.id,
+              type: 1, // Thu nhập
+              amount: refundAmt,
+              balanceBefore: currentBal,
+              balanceAfter: newBal,
+              description: `Hoàn tiền cọc đơn ${booking.bookingCode} vào ví đối tác do Admin từ chối hoàn cọc cho khách (+${refundAmt.toLocaleString('vi-VN')} đ)`,
+            },
+          });
+        }
+      }
+
+      const updated = await tx.booking.update({
+        where: { id: bookingId },
+        data: {
+          refundStatus: dto.refundStatus,
+          cancelReason: dto.adminNote
+            ? `${booking.cancelReason || ''} [Ghi chú Admin: ${dto.adminNote}]`.trim()
+            : booking.cancelReason,
+        },
+        include: {
+          customer: { select: { id: true, fullName: true, phone: true, email: true } },
+          store: { select: { id: true, storeName: true } },
+        },
+      });
+
+      return {
+        message:
+          dto.refundStatus === 1
+            ? 'Đã xác nhận hoàn tiền cọc cho khách hàng thành công'
+            : 'Đã từ chối hoàn cọc và chuyển lại tiền cọc cho nhà xe đối tác',
+        booking: updated,
+      };
+    });
+  }
 }
 
