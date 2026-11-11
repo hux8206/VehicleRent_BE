@@ -1,0 +1,327 @@
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id             Int      @id @default(autoincrement())
+  email          String   @unique @db.VarChar(255)
+  passwordHash   String   @db.VarChar(255)
+  fullName       String   @db.VarChar(150)
+  phone          String   @db.VarChar(20)
+  role           Int      @default(2) // 0: Admin, 1: Partner, 2: Customer
+  status         Boolean  @default(true)
+  driverLicense      String?  @db.VarChar(50)
+  driverLicenseFront String?  @db.VarChar(500)
+  driverLicenseBack  String?  @db.VarChar(500)
+  bankAccountNum     String?  @db.VarChar(50)
+  bankName           String?  @db.VarChar(100)
+  ownerPasswordHash  String?  @db.VarChar(255)
+  createdAt      DateTime @default(now())
+
+  stores              Store[]
+  bookings            Booking[]
+  partnerWallet       PartnerWallet?
+  payoutRequests      PayoutRequest[]
+  reviews             Review[]
+  storeUpdateRequests StoreUpdateRequest[]
+  feedbacks           Feedback[]
+
+  @@map("users")
+}
+
+model Store {
+  id           Int     @id @default(autoincrement())
+  partnerId    Int
+  storeName    String  @db.VarChar(255)
+  province     String? @db.VarChar(100)
+  address      String  @db.VarChar(500)
+  phoneContact String  @db.VarChar(20)
+  description  String? @db.Text
+  storeImage   String? @db.VarChar(500)
+  status       Int     @default(0) // 0: PENDING, 1: ACTIVE, 2: REJECTED
+  rejectReason String? @db.VarChar(500)
+  openTime     String? @default("07:00") @db.VarChar(10)
+  closeTime    String? @default("21:00") @db.VarChar(10)
+
+  partner       User           @relation(fields: [partnerId], references: [id])
+  rentalPolicy  RentalPolicy?
+  vehicleModels VehicleModel[]
+  bookings      Booking[]
+  reviews       Review[]
+  updateRequests StoreUpdateRequest[]
+
+  @@index([status, province])
+  @@map("stores")
+}
+
+model RentalPolicy {
+  id              Int     @id @default(autoincrement())
+  storeId         Int     @unique
+  depositPercent  Decimal @db.Decimal(5, 2)
+  cancelRule      String? @db.Text
+  refundCondition String? @db.Text
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@map("rental_policies")
+}
+
+model VehicleModel {
+  id             Int     @id @default(autoincrement())
+  storeId        Int
+  name           String  @db.VarChar(255)
+  brand          String  @db.VarChar(100)
+  type           Int     // 0: Xe so, 1: Tay ga, 2: Con tay, 3: O to/Xe dien
+  rentPrice      Decimal @db.Decimal(12, 2)
+  specifications String? @db.Text
+  images         Json?
+
+  store          Store           @relation(fields: [storeId], references: [id])
+  vehicleItems   VehicleItem[]
+  bookingDetails BookingDetail[]
+
+  @@index([storeId, type])
+  @@map("vehicle_models")
+}
+
+model VehicleItem {
+  id            Int     @id @default(autoincrement())
+  modelId       Int
+  licensePlate  String  @unique @db.VarChar(20)
+  color         String? @db.VarChar(50)
+  chassisNumber String? @db.VarChar(50)
+  status        Int     @default(0) // 0: Available, 1: Reserved, 2: Rented, 3: Maintenance
+
+  model          VehicleModel    @relation(fields: [modelId], references: [id])
+  bookingDetails BookingDetail[]
+
+  @@map("vehicle_items")
+}
+
+model Booking {
+  id               Int       @id @default(autoincrement())
+  bookingCode      String    @unique @db.VarChar(50)
+  customerId       Int
+  storeId          Int
+  startTime        DateTime
+  endTime          DateTime
+  pickupType       Int       @default(0) // 0: AtStore, 1: Delivery
+  deliveryAddress  String?   @db.VarChar(500)
+  dayRent          Decimal   @db.Decimal(5, 2)
+  rentAmount       Decimal   @db.Decimal(12, 2)
+  depositAmount    Decimal   @db.Decimal(12, 2)
+  commissionAmount Decimal   @db.Decimal(12, 2)
+  promotionId      Int?
+  promotionCode    String?   @db.VarChar(50)
+  discountAmount   Decimal   @default(0.00) @db.Decimal(12, 2)
+  holdExpiresAt    DateTime?
+  status           Int       @default(0) // 0: PendingPayment, 1: Confirmed, 2: WaitingQueue, 3: ActiveRental, 4: Completed, 5: Cancelled
+  cancelReason     String?   @db.VarChar(500)
+  cancelTime       DateTime?
+  refundStatus     Int?      @default(0) // 0: Chờ hoàn tiền, 1: Đã hoàn tiền, 2: Không hoàn cọc
+  refundBankName   String?   @db.VarChar(100)
+  refundAccountNumber String? @db.VarChar(50)
+  refundAccountName   String? @db.VarChar(100)
+  refundAmount     Decimal?  @db.Decimal(12, 2)
+  createdAt        DateTime  @default(now())
+
+  customer        User            @relation(fields: [customerId], references: [id])
+  store           Store           @relation(fields: [storeId], references: [id])
+  promotion       Promotion?      @relation(fields: [promotionId], references: [id])
+  bookingDetails  BookingDetail[]
+  payments        Payment[]
+  review          Review?
+  walletHistories WalletHistory[]
+
+  @@index([status, holdExpiresAt])
+  @@index([storeId, status, createdAt])
+  @@map("bookings")
+}
+
+model BookingDetail {
+  id            Int     @id @default(autoincrement())
+  bookingId     Int
+  modelId       Int
+  vehicleItemId Int?
+  quantity      Int     @default(1)
+  pricePerUnit  Decimal @db.Decimal(12, 2)
+  subTotal      Decimal @db.Decimal(12, 2)
+
+  booking     Booking      @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  model       VehicleModel @relation(fields: [modelId], references: [id])
+  vehicleItem VehicleItem? @relation(fields: [vehicleItemId], references: [id])
+
+  @@map("booking_details")
+}
+
+model PartnerWallet {
+  id          Int     @id @default(autoincrement())
+  partnerId   Int     @unique
+  balance     Decimal @default(0.00) @db.Decimal(12, 2)
+  creditLimit Decimal @default(500000.00) @db.Decimal(12, 2)
+  status      Int     @default(1)
+
+  partner   User            @relation(fields: [partnerId], references: [id])
+  histories WalletHistory[]
+
+  @@map("partner_wallets")
+}
+
+model WalletHistory {
+  id            Int      @id @default(autoincrement())
+  walletId      Int
+  bookingId     Int?
+  type          Int      // 0: Deposit, 1: Commission_Deduction, 2: Refund
+  amount        Decimal  @db.Decimal(12, 2)
+  balanceBefore Decimal  @db.Decimal(12, 2)
+  balanceAfter  Decimal  @db.Decimal(12, 2)
+  description   String   @db.VarChar(255)
+  createdAt     DateTime @default(now())
+
+  wallet  PartnerWallet @relation(fields: [walletId], references: [id])
+  booking Booking?      @relation(fields: [bookingId], references: [id])
+
+  @@index([walletId, createdAt])
+  @@map("wallet_histories")
+}
+
+model Payment {
+  id             Int       @id @default(autoincrement())
+  bookingId      Int
+  transactionRef String    @unique @db.VarChar(100)
+  paymentMethod  Int       @default(1) // 0: Cash, 1: BankTransfer/VietQR
+  paymentType    Int       // 0: FullPayment, 1: DepositOnly
+  amount         Decimal   @db.Decimal(12, 2)
+  paymentStatus  Int       @default(0) // 0: Pending, 1: Success, 2: Failed
+  paymentTime    DateTime?
+  createdAt      DateTime  @default(now())
+
+  booking Booking @relation(fields: [bookingId], references: [id])
+
+  @@map("payments")
+}
+
+model Review {
+  id           Int      @id @default(autoincrement())
+  bookingId    Int      @unique
+  customerId   Int
+  storeId      Int
+  rateStar     Int
+  comment      String?  @db.Text
+  isHidden     Boolean  @default(false)
+  hiddenReason String?  @db.VarChar(255)
+  createdAt    DateTime @default(now())
+
+  booking  Booking @relation(fields: [bookingId], references: [id])
+  customer User    @relation(fields: [customerId], references: [id])
+  store    Store   @relation(fields: [storeId], references: [id])
+
+  @@index([storeId, isHidden])
+  @@map("reviews")
+}
+
+model SystemConfig {
+  id                Int      @id @default(autoincrement())
+  commissionRate    Decimal  @default(10.00) @db.Decimal(5, 2) // % hoa hồng sàn (mặc định 10%)
+  creditLimit       Decimal  @default(500000.00) @db.Decimal(12, 2) // Hạn mức âm cho phép (mặc định 500k)
+  minDepositPercent Decimal  @default(15.00) @db.Decimal(5, 2) // % cọc tối thiểu toàn hệ thống (mặc định 15%)
+  updatedAt         DateTime @updatedAt
+
+  @@map("system_configs")
+}
+
+model PayoutRequest {
+  id             Int      @id @default(autoincrement())
+  partnerId      Int
+  amount         Decimal  @db.Decimal(12, 2)
+  bankAccountNum String   @db.VarChar(50)
+  bankName       String   @db.VarChar(100)
+  accountHolder  String   @db.VarChar(150)
+  status         Int      @default(0) // 0: PENDING, 1: APPROVED, 2: REJECTED
+  note           String?  @db.VarChar(255)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  partner User @relation(fields: [partnerId], references: [id])
+
+  @@map("payout_requests")
+}
+
+model StoreUpdateRequest {
+  id             Int      @id @default(autoincrement())
+  storeId        Int
+  partnerId      Int
+  storeName      String   @db.VarChar(255)
+  province       String?  @db.VarChar(100)
+  address        String   @db.VarChar(500)
+  phoneContact   String   @db.VarChar(20)
+  description    String?  @db.Text
+  storeImage     String?  @db.VarChar(500)
+  depositPercent Decimal  @db.Decimal(5, 2)
+  cancelRule     String?  @db.Text
+  bankAccountNum String?  @db.VarChar(50)
+  bankName       String?  @db.VarChar(100)
+  openTime       String?  @db.VarChar(10)
+  closeTime      String?  @db.VarChar(10)
+  status         Int      @default(0) // 0: PENDING, 1: APPROVED, 2: REJECTED
+  rejectReason   String?  @db.VarChar(500)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  store   Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  partner User  @relation(fields: [partnerId], references: [id])
+
+  @@map("store_update_requests")
+}
+
+model Promotion {
+  id            Int       @id @default(autoincrement())
+  code          String    @unique @db.VarChar(50)
+  title         String    @db.VarChar(255)
+  description   String?   @db.Text
+  discountType  Int       @default(0) // 0: Percentage (%), 1: Fixed Amount (VND)
+  discountValue Decimal   @db.Decimal(12, 2)
+  minRentDays   Int       @default(1)
+  maxDiscount   Decimal?  @db.Decimal(12, 2)
+  tag           String?   @db.VarChar(50) // TAN THU, GOI PHO BIEN, TIEN ICH, HOT
+  bullets       Json?     // ["Áp dụng từ đơn đầu tiên", "Giữ xe 10 phút"]
+  startDate     DateTime?
+  endDate       DateTime?
+  usageLimit    Int?      @default(1000)
+  usedCount     Int       @default(0)
+  isActive      Boolean   @default(true)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  bookings      Booking[]
+
+  @@map("promotions")
+}
+
+model Feedback {
+  id         Int      @id @default(autoincrement())
+  userId     Int?
+  fullName   String   @db.VarChar(150)
+  email      String   @db.VarChar(255)
+  phone      String?  @db.VarChar(20)
+  category   String   @default("GENERAL") @db.VarChar(50) // "SERVICE", "APP_UI", "POLICY", "VEHICLE", "BUG", "OTHER"
+  rating     Int      @default(5) // 1 to 5
+  subject    String   @db.VarChar(255)
+  content    String   @db.Text
+  status     Int      @default(0) // 0: Pending/Mới tiếp nhận, 1: Reviewed/Đang xử lý, 2: Resolved/Đã hoàn tất
+  adminNote  String?  @db.Text
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  user       User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@map("feedbacks")
+}
+
+
