@@ -1,13 +1,17 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../prisma/prisma.service';
 import { RegisterCustomerDto } from './dto/register-customer.dto';
 import { RegisterPartnerDto } from './dto/register-partner.dto';
 import { LoginDto } from './dto/login.dto';
+import { ForgotPasswordDto } from './dto/forgot-password.dto';
+import { ResetPasswordDto } from './dto/reset-password.dto';
 import * as bcrypt from 'bcryptjs';
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwt: JwtService,
@@ -393,5 +397,90 @@ export class AuthService {
 
       return { success: true, message: 'Đã xóa vĩnh viễn tài khoản người dùng thành công' };
     });
+  }
+
+  /**
+   * Flow: Yêu cầu mã OTP khôi phục mật khẩu
+   */
+  async forgotPassword(dto: ForgotPasswordDto) {
+    const email = dto.email.trim().toLowerCase();
+    const user = await this.prisma.user.findUnique({ where: { email } });
+
+    // Để đảm bảo an toàn (chống user enumeration), nếu email không tồn tại vẫn trả về thông báo chung
+    if (!user) {
+      this.logger.warn(`[ForgotPassword] Yêu cầu reset pass cho email không tồn tại: ${email}`);
+      return {
+        success: true,
+        message: 'Nếu địa chỉ email này tồn tại trong hệ thống, bạn sẽ nhận được mã OTP xác thực trong giây lát.',
+      };
+    }
+
+    if (!user.status) {
+      throw new BadRequestException('Tài khoản này hiện đang bị khóa bởi Quản trị viên sàn.');
+    }
+
+    // Sinh mã OTP ngẫu nhiên 6 chữ số (100000 - 999999)
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const hashedOtp = await bcrypt.hash(otp, 10);
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 phút
+
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: {
+        resetOtp: hashedOtp,
+        resetOtpExpiresAt: expiresAt,
+      },
+    });
+
+    this.logger.log(`🔑 [OTP RESET PASSWORD] Mã OTP khôi phục cho ${email} là: >>> ${otp} <<< (Hết hạn: 10 phút)`);
+
+    return {
+      success: true,
+      message: 'Mã xác thực OTP (6 chữ số) đã được tạo thành công! Vui lòng nhập mã để tạo mật khẩu mới.',
+      devOtp: process.env.NODE_ENV !== 'production' ? otp : undefined,
+    };
+  }
+
+  /**
+   * Flow: Đặt lại mật khẩu mới với mã OTP
+   */
+  async resetPassword(dto: ResetPasswordDto) {
+    const email = dto.email.trim().toLowerCase();
+    const user = await this.prisma.user.findUnique({ where: { email } });
+
+    if (!user || !user.resetOtp || !user.resetOtpExpiresAt) {
+      throw new BadRequestException('Yêu cầu không hợp lệ hoặc bạn chưa yêu cầu mã OTP. Vui lòng thử lại.');
+    }
+
+    // Kiểm tra thời hạn OTP
+    if (new Date() > user.resetOtpExpiresAt) {
+      throw new BadRequestException('Mã xác thực OTP đã hết hạn (quá 10 phút). Vui lòng gửi lại yêu cầu mới.');
+    }
+
+    // So khớp mã OTP
+    const isOtpValid = await bcrypt.compare(dto.otp.trim(), user.resetOtp);
+    if (!isOtpValid) {
+      throw new BadRequestException('Mã OTP không chính xác. Vui lòng kiểm tra lại 6 chữ số.');
+    }
+
+    // Hash mật khẩu mới
+    const newPasswordHash = await bcrypt.hash(dto.newPassword, 10);
+
+    // Cập nhật mật khẩu mới và xóa mã OTP (chống dùng lại)
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: {
+        passwordHash: newPasswordHash,
+        resetOtp: null,
+        resetOtpExpiresAt: null,
+      },
+    });
+
+    this.logger.log(`✅ [ResetPassword] Tài khoản ${email} đã đặt lại mật khẩu mới thành công!`);
+
+    return {
+      success: true,
+      message: 'Đặt lại mật khẩu thành công! Bạn có thể đăng nhập ngay bằng mật khẩu mới.',
+    };
   }
 }

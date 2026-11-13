@@ -5,6 +5,8 @@ import { AuthService } from './auth.service';
 import { RegisterCustomerDto } from './dto/register-customer.dto';
 import { RegisterPartnerDto } from './dto/register-partner.dto';
 import { LoginDto } from './dto/login.dto';
+import { ForgotPasswordDto } from './dto/forgot-password.dto';
+import { ResetPasswordDto } from './dto/reset-password.dto';
 import { JwtAuthGuard } from './jwt-auth.guard';
 import { RolesGuard } from './roles.guard';
 import { Roles } from './roles.decorator';
@@ -46,6 +48,29 @@ export class AuthController {
   @ApiResponse({ status: 401, description: 'Sai email hoặc mật khẩu / Tài khoản bị khóa' })
   login(@Body() dto: LoginDto) {
     return this.authService.login(dto);
+  }
+
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
+  @Post('forgot-password')
+  @ApiOperation({
+    summary: 'Yêu cầu mã OTP khôi phục mật khẩu (Quên mật khẩu)',
+    description: 'Sinh mã OTP 6 chữ số và lưu hash OTP có hạn 10 phút.',
+  })
+  @ApiResponse({ status: 200, description: 'Yêu cầu OTP thành công' })
+  forgotPassword(@Body() dto: ForgotPasswordDto) {
+    return this.authService.forgotPassword(dto);
+  }
+
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
+  @Post('reset-password')
+  @ApiOperation({
+    summary: 'Xác thực OTP và đặt lại mật khẩu mới',
+    description: 'Xác minh OTP hợp lệ và cập nhật mật khẩu mới bằng bcrypt.',
+  })
+  @ApiResponse({ status: 200, description: 'Đổi mật khẩu thành công' })
+  @ApiResponse({ status: 400, description: 'Mã OTP sai hoặc đã hết hạn' })
+  resetPassword(@Body() dto: ResetPasswordDto) {
+    return this.authService.resetPassword(dto);
   }
 
   @Get('me')

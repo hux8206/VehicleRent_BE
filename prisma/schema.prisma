@@ -22,7 +22,9 @@ model User {
   bankAccountNum     String?  @db.VarChar(50)
   bankName           String?  @db.VarChar(100)
   ownerPasswordHash  String?  @db.VarChar(255)
-  createdAt      DateTime @default(now())
+  resetOtp           String?  @db.VarChar(100)
+  resetOtpExpiresAt  DateTime?
+  createdAt          DateTime @default(now())
 
   stores              Store[]
   bookings            Booking[]
