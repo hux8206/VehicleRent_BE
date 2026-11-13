@@ -120,7 +120,7 @@ export class BookingsService {
         where: { modelId, status: { not: 3 } },
       });
 
-      const busyCount = await tx.bookingDetail.count({
+      const busyAgg = await tx.bookingDetail.aggregate({
         where: {
           modelId,
           booking: {
@@ -136,8 +136,12 @@ export class BookingsService {
             ],
           },
         },
+        _sum: {
+          quantity: true,
+        },
       });
 
+      const busyCount = busyAgg._sum.quantity || 0;
       const availableCount = totalActiveItems - busyCount;
       if (availableCount < quantity) {
         throw new BadRequestException(
@@ -257,17 +261,20 @@ export class BookingsService {
         take: quantity,
       });
 
-      // ── Tạo BookingDetail ────────────────────────────────────────────────
-      await tx.bookingDetail.create({
-        data: {
-          bookingId: booking.id,
-          modelId,
-          vehicleItemId: availableItems[0] ? availableItems[0].id : null,
-          quantity,
-          pricePerUnit: rentPrice,
-          subTotal: rentAmount,
-        },
-      });
+      // ── Tạo các BookingDetail tương ứng với số lượng xe đặt ───────────────
+      const rentPerUnitTotal = rentPrice * dayRent;
+      for (let i = 0; i < quantity; i++) {
+        await tx.bookingDetail.create({
+          data: {
+            bookingId: booking.id,
+            modelId,
+            vehicleItemId: availableItems[i] ? availableItems[i].id : null,
+            quantity: 1,
+            pricePerUnit: rentPrice,
+            subTotal: rentPerUnitTotal,
+          },
+        });
+      }
 
       // Cập nhật trạng thái xe vật lý: Sẵn sàng (0) → Đang giữ (1: Reserved)
       if (availableItems.length > 0) {
@@ -392,22 +399,6 @@ export class BookingsService {
       if (booking.status !== 0 && booking.status !== 1 && booking.status !== 2)
         throw new BadRequestException('Chỉ có thể hủy đơn khi đang chờ thanh toán hoặc đã cọc chờ nhận xe');
 
-      // Nếu đơn đã cọc (status 1: Confirmed), bắt buộc phải có lý do và thông tin ngân hàng để hoàn tiền cọc
-      if (booking.status === 1) {
-        if (!dto?.reason?.trim()) {
-          throw new BadRequestException('Vui lòng cung cấp lý do hủy đơn');
-        }
-        if (
-          !dto?.bankName?.trim() ||
-          !dto?.bankAccountNumber?.trim() ||
-          !dto?.bankAccountName?.trim()
-        ) {
-          throw new BadRequestException(
-            'Vui lòng nhập đầy đủ thông tin tài khoản ngân hàng để hệ thống hoàn tiền cọc về cho bạn',
-          );
-        }
-      }
-
       // 2. Hoàn trả tất cả xe vật lý đã giữ về trạng thái Sẵn sàng (status = 0)
       for (const detail of booking.bookingDetails) {
         if (detail.vehicleItemId) {
@@ -418,30 +409,70 @@ export class BookingsService {
         }
       }
 
-      // 3. Nếu đơn đã thanh toán cọc (status = 1), tính toán tỷ lệ hoàn cọc theo chính sách sàn:
-      // - Hủy trước giờ nhận xe >= 24h: Hoàn 100% tiền cọc (Miễn phí hủy)
-      // - Hủy trước giờ nhận xe từ 6h đến < 24h: Hoàn 50% tiền cọc (Đối tác giữ 50% phí bù đắp)
-      // - Hủy trước giờ nhận xe < 6h: Không hoàn lại tiền cọc (0%)
+      // 3. Nếu đơn đã thanh toán cọc (status = 1), tính toán tỷ lệ hoàn cọc theo chính sách mới:
+      // Quy tắc:
+      // 1. Hủy trước >= 24h nhận xe: Hoàn 100% cọc
+      // 2. Hủy trước 6h - 24h nhận xe:
+      //    - Đặt dưới 30 phút: Hoàn 100% cọc
+      //    - Quá 30 phút từ lúc đặt: Hoàn 50% cọc
+      // 3. Hủy dưới 6h nhận xe:
+      //    - Đặt dưới 30 phút: Hoàn 50% cọc
+      //    - Quá 30 phút từ lúc đặt: Mất 100% cọc (0% hoàn lại)
       let refundAmountNum = 0;
       let policyNote = '';
       let initialRefundStatus: number | null = null;
 
       if (booking.status === 1) {
+        if (!dto?.reason?.trim()) {
+          throw new BadRequestException('Vui lòng cung cấp lý do hủy đơn');
+        }
+
         const totalDeposit = Number(booking.depositAmount);
-        const hoursToStart = (new Date(booking.startTime).getTime() - Date.now()) / (1000 * 60 * 60);
+        const nowMs = Date.now();
+        const startMs = new Date(booking.startTime).getTime();
+        const createdMs = new Date(booking.createdAt).getTime();
+
+        const hoursToStart = (startMs - nowMs) / (1000 * 60 * 60);
+        const minutesSinceBooking = (nowMs - createdMs) / (1000 * 60);
 
         if (hoursToStart >= 24) {
           refundAmountNum = totalDeposit;
-          policyNote = 'Hủy trước >= 24h (Hoàn 100% cọc)';
+          policyNote = 'Hủy trước >= 24h nhận xe (Hoàn 100% cọc)';
           initialRefundStatus = 0; // Chờ Admin chuyển khoản
         } else if (hoursToStart >= 6) {
-          refundAmountNum = Math.round(totalDeposit * 0.5);
-          policyNote = 'Hủy trước 6h - 24h (Hoàn 50% cọc, nhà xe giữ 50%)';
-          initialRefundStatus = 0; // Chờ Admin chuyển khoản
+          if (minutesSinceBooking <= 30) {
+            refundAmountNum = totalDeposit;
+            policyNote = 'Hủy trước 6h - 24h và vừa đặt dưới 30 phút (Hoàn 100% cọc)';
+            initialRefundStatus = 0;
+          } else {
+            refundAmountNum = Math.round(totalDeposit * 0.5);
+            policyNote = 'Hủy trước 6h - 24h và quá 30 phút từ lúc đặt (Hoàn 50% cọc, nhà xe giữ 50%)';
+            initialRefundStatus = 0;
+          }
         } else {
-          refundAmountNum = 0;
-          policyNote = 'Hủy dưới 6h trước giờ nhận (Không hoàn cọc theo quy định)';
-          initialRefundStatus = 2; // Từ chối hoàn do cận giờ
+          // hoursToStart < 6
+          if (minutesSinceBooking <= 30) {
+            refundAmountNum = Math.round(totalDeposit * 0.5);
+            policyNote = 'Hủy cận giờ dưới 6h và vừa đặt dưới 30 phút (Hoàn 50% cọc, nhà xe giữ 50%)';
+            initialRefundStatus = 0;
+          } else {
+            refundAmountNum = 0;
+            policyNote = 'Hủy cận giờ dưới 6h và quá 30 phút từ lúc đặt (Mất 100% cọc theo quy định)';
+            initialRefundStatus = 2; // Không hoàn cọc do vi phạm điều kiện
+          }
+        }
+
+        // Bắt buộc thông tin tài khoản ngân hàng khi khách đủ điều kiện hoàn cọc (> 0 đ)
+        if (refundAmountNum > 0) {
+          if (
+            !dto?.bankName?.trim() ||
+            !dto?.bankAccountNumber?.trim() ||
+            !dto?.bankAccountName?.trim()
+          ) {
+            throw new BadRequestException(
+              'Đơn của bạn đủ điều kiện hoàn cọc. Vui lòng nhập đầy đủ thông tin tài khoản ngân hàng để hệ thống hoàn tiền về cho bạn.',
+            );
+          }
         }
 
         // Idempotency: Kiểm tra xem đã từng thu hồi tiền hoàn cọc của đơn này trong ví đối tác chưa
@@ -523,7 +554,7 @@ export class BookingsService {
   }
 
   /** Flow 6a: Partner bàn giao xe — gán biển số + chuyển sang ActiveRental */
-  async handoverVehicle(partnerId: number, bookingId: number, vehicleItemId: number) {
+  async handoverVehicle(partnerId: number, bookingId: number, vehicleItemIds: number[]) {
     return this.prisma.$transaction(async (tx) => {
       // 1. Khóa và đọc lại đơn trong transaction (Chống Race Condition & Double Handover)
       const booking = await tx.booking.findUnique({
@@ -536,32 +567,93 @@ export class BookingsService {
       if (booking.status !== 1)
         throw new BadRequestException('Đơn phải ở trạng thái Confirmed (1) mới có thể bàn giao xe');
 
-      const detail = booking.bookingDetails[0];
-      const vehicleItem = await tx.vehicleItem.findUnique({ where: { id: vehicleItemId } });
-      if (!vehicleItem) throw new NotFoundException('Xe (biển số) không tồn tại');
-      if (vehicleItem.modelId !== detail.modelId)
-        throw new BadRequestException('Biển số xe không thuộc dòng xe trong đơn');
+      // Chuẩn hóa nếu đơn cũ chỉ có 1 detail với quantity > 1: tách thành các detail riêng
+      if (booking.bookingDetails.length === 1 && booking.bookingDetails[0].quantity > 1) {
+        const oldDetail = booking.bookingDetails[0];
+        const qty = oldDetail.quantity;
+        const unitSubTotal = Number(oldDetail.subTotal) / qty;
+        await tx.bookingDetail.update({
+          where: { id: oldDetail.id },
+          data: { quantity: 1, subTotal: unitSubTotal },
+        });
+        for (let i = 1; i < qty; i++) {
+          await tx.bookingDetail.create({
+            data: {
+              bookingId: booking.id,
+              modelId: oldDetail.modelId,
+              vehicleItemId: null,
+              quantity: 1,
+              pricePerUnit: oldDetail.pricePerUnit,
+              subTotal: unitSubTotal,
+            },
+          });
+        }
+        booking.bookingDetails = await tx.bookingDetail.findMany({
+          where: { bookingId },
+        });
+      }
 
-      // Cho phép xe đang ở trạng thái Available (0) HOẶC xe đang được giữ riêng cho đơn này (1)
-      const isPreAssigned = vehicleItem.status === 1 && detail.vehicleItemId === vehicleItem.id;
-      if (vehicleItem.status !== 0 && !isPreAssigned) {
-        throw new BadRequestException('Xe này không ở trạng thái sẵn sàng hoặc đang giữ cho đơn này');
+      const details = booking.bookingDetails;
+      if (!details || details.length === 0) {
+        throw new BadRequestException('Đơn thuê không có thông tin chi tiết xe');
+      }
+
+      // Lấy danh sách ID các xe đã được giữ trước đó cho đơn này
+      const existingHeldItemIds = details
+        .map((d) => d.vehicleItemId)
+        .filter((id): id is number => typeof id === 'number');
+
+      let finalItemIds = vehicleItemIds;
+      if (!finalItemIds || finalItemIds.length === 0) {
+        finalItemIds = existingHeldItemIds;
+      }
+
+      if (finalItemIds.length !== details.length) {
+        throw new BadRequestException(
+          `Cần chọn đủ ${details.length} biển số xe để bàn giao (Hiện đã chọn ${finalItemIds.length} xe)`,
+        );
+      }
+
+      // Kiểm tra trùng lặp biển số trong danh sách chọn bàn giao
+      const uniqueIds = new Set(finalItemIds);
+      if (uniqueIds.size !== finalItemIds.length) {
+        throw new BadRequestException('Không thể chọn cùng 1 biển số xe nhiều lần cho các xe khác nhau');
+      }
+
+      // Kiểm tra tính hợp lệ của từng xe bàn giao
+      for (const vId of finalItemIds) {
+        const vehicleItem = await tx.vehicleItem.findUnique({ where: { id: vId } });
+        if (!vehicleItem) throw new NotFoundException(`Xe với ID ${vId} không tồn tại`);
+        if (vehicleItem.modelId !== details[0].modelId)
+          throw new BadRequestException(`Biển số xe ${vehicleItem.licensePlate} không thuộc dòng xe trong đơn`);
+
+        const isPreAssigned = vehicleItem.status === 1 && existingHeldItemIds.includes(vehicleItem.id);
+        if (vehicleItem.status !== 0 && !isPreAssigned) {
+          throw new BadRequestException(
+            `Xe ${vehicleItem.licensePlate} không ở trạng thái sẵn sàng hoặc đang được đơn này giữ`,
+          );
+        }
       }
 
       // Nếu nhân viên chọn bàn giao xe khác xe đã giữ ban đầu, hoàn trả xe cũ về Sẵn sàng (0)
-      if (detail.vehicleItemId && detail.vehicleItemId !== vehicleItemId) {
-        await tx.vehicleItem.update({
-          where: { id: detail.vehicleItemId },
+      const unselectedOldItemIds = existingHeldItemIds.filter((id) => !finalItemIds.includes(id));
+      if (unselectedOldItemIds.length > 0) {
+        await tx.vehicleItem.updateMany({
+          where: { id: { in: unselectedOldItemIds } },
           data: { status: 0 },
         });
       }
 
-      await tx.bookingDetail.update({
-        where: { id: detail.id },
-        data: { vehicleItemId },
-      });
-      await tx.vehicleItem.update({
-        where: { id: vehicleItemId },
+      // Cập nhật từng bookingDetail và gán status = 2 (Rented) cho xe
+      for (let i = 0; i < details.length; i++) {
+        await tx.bookingDetail.update({
+          where: { id: details[i].id },
+          data: { vehicleItemId: finalItemIds[i] },
+        });
+      }
+
+      await tx.vehicleItem.updateMany({
+        where: { id: { in: finalItemIds } },
         data: { status: 2 }, // Rented
       });
 
@@ -622,14 +714,15 @@ export class BookingsService {
       if (booking.status !== 3)
         throw new BadRequestException('Đơn phải ở trạng thái ActiveRental (3) mới có thể hoàn thành');
 
-      const detail = booking.bookingDetails[0];
-
-      if (detail?.vehicleItemId) {
-        await tx.vehicleItem.update({
-          where: { id: detail.vehicleItemId },
-          data: { status: 0 }, // Available
-        });
+      for (const detail of booking.bookingDetails) {
+        if (detail?.vehicleItemId) {
+          await tx.vehicleItem.update({
+            where: { id: detail.vehicleItemId },
+            data: { status: 0 }, // Available
+          });
+        }
       }
+
       return tx.booking.update({
         where: { id: bookingId },
         data: { status: 4 }, // Completed

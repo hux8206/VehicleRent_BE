@@ -121,9 +121,16 @@ export class PartnerBookingsController {
   handover(
     @Request() req: any,
     @Param('id', ParseIntPipe) id: number,
-    @Body('vehicleItemId', ParseIntPipe) vehicleItemId: number,
+    @Body() body: any,
   ) {
-    return this.bookingsService.handoverVehicle(req.user.id, id, vehicleItemId);
+    let ids: number[] = [];
+    if (body?.vehicleItemIds && Array.isArray(body.vehicleItemIds) && body.vehicleItemIds.length > 0) {
+      ids = body.vehicleItemIds.map((x: any) => Number(x)).filter((n: number) => !isNaN(n));
+    } else if (body?.vehicleItemId) {
+      const single = Number(body.vehicleItemId);
+      if (!isNaN(single)) ids = [single];
+    }
+    return this.bookingsService.handoverVehicle(req.user.id, id, ids);
   }
 
   @Post(':id/complete')

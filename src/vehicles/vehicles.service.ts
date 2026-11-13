@@ -316,8 +316,8 @@ export class VehiclesService {
         // TotalActiveVehicleItems = xe không bị bảo dưỡng (status != 3)
         const totalActiveItems = model.vehicleItems.filter((vi) => vi.status !== 3).length;
 
-        // BusyVehicleCount: đếm booking_details có đơn trùng khoảng thời gian
-        const busyCount = await this.prisma.bookingDetail.count({
+        // BusyVehicleCount: tính tổng số lượng xe bận trùng khoảng thời gian (hỗ trợ đơn đặt nhiều xe)
+        const busyAgg = await this.prisma.bookingDetail.aggregate({
           where: {
             modelId: model.id,
             booking: {
@@ -336,8 +336,12 @@ export class VehiclesService {
               ],
             },
           },
+          _sum: {
+            quantity: true,
+          },
         });
 
+        const busyCount = busyAgg._sum.quantity || 0;
         const availableCount = Math.max(0, totalActiveItems - busyCount);
 
         // Thống kê đánh giá thực tế của dòng xe
@@ -417,7 +421,7 @@ export class VehiclesService {
 
     const totalActiveItems = model.vehicleItems.filter((vi) => vi.status !== 3).length;
 
-    const busyCount = await this.prisma.bookingDetail.count({
+    const busyAgg = await this.prisma.bookingDetail.aggregate({
       where: {
         modelId,
         booking: {
@@ -433,8 +437,12 @@ export class VehiclesService {
           ],
         },
       },
+      _sum: {
+        quantity: true,
+      },
     });
 
+    const busyCount = busyAgg._sum.quantity || 0;
     const availableCount = Math.max(0, totalActiveItems - busyCount);
 
     // Lấy danh sách đánh giá thực tế của dòng xe này
