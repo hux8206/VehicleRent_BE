@@ -10,3 +10,4 @@ export class ForgotPasswordDto {
   @IsNotEmpty({ message: 'Vui lòng nhập địa chỉ email' })
   email: string;
 }
+

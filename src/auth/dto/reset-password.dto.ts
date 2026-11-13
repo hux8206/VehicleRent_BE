@@ -26,3 +26,4 @@ export class ResetPasswordDto {
   @MinLength(6, { message: 'Mật khẩu mới phải có độ dài tối thiểu từ 6 ký tự trở lên' })
   newPassword: string;
 }
+
