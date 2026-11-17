@@ -210,6 +210,20 @@ export class VehiclesService {
       }
     }
 
+    if (dto.status !== undefined && dto.status !== item.status) {
+      if (item.status === 1 || item.status === 2) {
+        const text = item.status === 2 ? 'đang cho thuê' : 'đang được giữ chỗ cho khách';
+        throw new BadRequestException(
+          `Xe này hiện ${text}, không thể thay đổi trạng thái thủ công! Vui lòng thao tác qua đơn thuê (bàn giao / trả xe).`
+        );
+      }
+      if (dto.status === 1 || dto.status === 2) {
+        throw new BadRequestException(
+          'Không thể chuyển xe sang trạng thái "Đang giữ" hoặc "Đang cho thuê" thủ công. Trạng thái này được cập nhật tự động khi có đơn thuê.'
+        );
+      }
+    }
+
     return this.prisma.vehicleItem.update({
       where: { id: itemId },
       data: {
@@ -228,10 +242,32 @@ export class VehiclesService {
   ) {
     const item = await this.prisma.vehicleItem.findUnique({
       where: { id: itemId },
-      include: { model: true },
+      include: {
+        model: true,
+        bookingDetails: {
+          where: { booking: { status: { in: [0, 1, 2, 3] } } },
+          include: { booking: true },
+        },
+      },
     });
     if (!item) throw new NotFoundException('Xe không tồn tại');
     await this.assertStoreOwnership(partnerId, item.model.storeId);
+
+    // Validate: Không cho phép đổi trạng thái thủ công nếu xe đang bận / có đơn
+    const isBusy = item.status === 1 || item.status === 2 || (item.bookingDetails && item.bookingDetails.length > 0);
+    if (isBusy) {
+      const text = item.status === 2 ? 'đang cho thuê' : 'đang được giữ chỗ cho khách';
+      throw new BadRequestException(
+        `Xe này hiện ${text}, không thể thay đổi trạng thái thủ công! Vui lòng thao tác qua đơn thuê (bàn giao / trả xe).`
+      );
+    }
+
+    // Không cho phép tự ý chuyển sang Đang giữ hoặc Đang thuê mà không qua đơn
+    if (dto.status === 1 || dto.status === 2) {
+      throw new BadRequestException(
+        'Không thể chuyển xe sang trạng thái "Đang giữ" hoặc "Đang cho thuê" thủ công. Trạng thái này được cập nhật tự động khi có đơn thuê.'
+      );
+    }
 
     return this.prisma.vehicleItem.update({
       where: { id: itemId },

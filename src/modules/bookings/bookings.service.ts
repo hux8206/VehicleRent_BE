@@ -7,7 +7,9 @@ import {
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateBookingDto } from './dto/create-booking.dto';
 import { CancelBookingDto } from './dto/cancel-booking.dto';
+import { CreateWalkInBookingDto } from './dto/create-walkin-booking.dto';
 import { PaymentsService } from '../payments/payments.service';
+import * as bcrypt from 'bcryptjs';
 
 const COMMISSION_RATE = 0.1; // 10% hoa hồng sàn
 
@@ -978,6 +980,165 @@ export class BookingsService {
         payments: true,
       },
       orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  /** Tạo đơn thuê trực tiếp tại quầy cho khách vãng lai (Walk-in Booking) */
+  async createWalkInBooking(partnerId: number, dto: CreateWalkInBookingDto) {
+    // 1. Kiểm tra quyền sở hữu chi nhánh
+    const store = await this.prisma.store.findUnique({
+      where: { id: dto.storeId },
+      include: { rentalPolicy: true },
+    });
+    if (!store) throw new NotFoundException('Chi nhánh không tồn tại');
+    if (store.partnerId !== partnerId) {
+      throw new ForbiddenException('Chi nhánh không thuộc quyền quản lý của bạn');
+    }
+    if (store.status !== 1) {
+      throw new BadRequestException('Chi nhánh đang tạm ngừng hoặc chưa được duyệt, không thể tạo đơn');
+    }
+
+    // 2. Kiểm tra dòng xe & xe vật lý
+    const vehicleItem = await this.prisma.vehicleItem.findUnique({
+      where: { id: dto.vehicleItemId },
+      include: { model: true },
+    });
+    if (!vehicleItem) throw new NotFoundException('Xe vật lý không tồn tại');
+    if (vehicleItem.model.storeId !== dto.storeId || vehicleItem.modelId !== dto.modelId) {
+      throw new BadRequestException('Xe vật lý không thuộc dòng xe hoặc chi nhánh đã chọn');
+    }
+    if (vehicleItem.status !== 0) {
+      const stText = vehicleItem.status === 1 ? 'đang giữ chỗ' : vehicleItem.status === 2 ? 'đang cho thuê' : 'đang bảo dưỡng';
+      throw new BadRequestException(`Xe biển số ${vehicleItem.licensePlate} hiện ${stText}, không thể gán cho đơn mới`);
+    }
+
+    // 3. Kiểm tra thời gian
+    const start = new Date(dto.startTime);
+    const end = new Date(dto.endTime);
+    if (isNaN(start.getTime()) || isNaN(end.getTime()) || end <= start) {
+      throw new BadRequestException('Thời gian trả xe phải sau thời gian nhận xe');
+    }
+
+    // 4. Tính toán số ngày và tiền tệ
+    const diffHours = (end.getTime() - start.getTime()) / (1000 * 60 * 60);
+    const rentDays = Math.max(1, Math.ceil(diffHours / 24));
+    const rentPricePerDay = dto.rentPrice !== undefined ? Number(dto.rentPrice) : Number(vehicleItem.model.rentPrice);
+    const totalRentAmount = dto.totalAmount !== undefined ? Number(dto.totalAmount) : rentDays * rentPricePerDay;
+    const defaultDepositPercent = Number(store.rentalPolicy?.depositPercent || 15);
+    const depositAmount = dto.depositAmount !== undefined ? Number(dto.depositAmount) : Math.round(totalRentAmount * (defaultDepositPercent / 100));
+    const commissionAmount = Math.round(totalRentAmount * 0.10);
+
+    // 5. Tìm hoặc tạo Customer user cho khách vãng lai
+    const phoneClean = dto.customerPhone.trim();
+    let customer = await this.prisma.user.findFirst({
+      where: { phone: phoneClean },
+    });
+    if (!customer && dto.customerEmail) {
+      customer = await this.prisma.user.findUnique({
+        where: { email: dto.customerEmail.trim() },
+      });
+    }
+
+    if (!customer) {
+      const randomSuffix = Math.random().toString(36).substring(2, 7);
+      const generatedEmail = dto.customerEmail?.trim() || `walkin_${phoneClean.replace(/\D/g, '') || randomSuffix}@vehiclerent.local`;
+      const tempPasswordHash = await bcrypt.hash(`WalkIn@${phoneClean.slice(-4) || '2026'}`, 10);
+
+      customer = await this.prisma.user.create({
+        data: {
+          fullName: dto.customerName.trim(),
+          phone: phoneClean,
+          email: generatedEmail,
+          passwordHash: tempPasswordHash,
+          role: 2, // Customer
+          driverLicense: dto.driverLicense?.trim() || undefined,
+        },
+      });
+    } else if (dto.driverLicense && !customer.driverLicense) {
+      await this.prisma.user.update({
+        where: { id: customer.id },
+        data: { driverLicense: dto.driverLicense.trim() },
+      });
+    }
+
+    // 6. Tạo đơn trong transaction
+    const handoverNow = dto.handoverNow !== false; // Mặc định bàn giao ngay
+    const newBookingStatus = handoverNow ? 3 : 1; // 3: ActiveRental, 1: Confirmed
+    const newVehicleStatus = handoverNow ? 2 : 1; // 2: Rented, 1: Reserved
+    const bookingCode = `VR-WALK-${Date.now().toString().slice(-6)}-${Math.floor(100 + Math.random() * 900)}`;
+
+    return this.prisma.$transaction(async (tx) => {
+      const booking = await tx.booking.create({
+        data: {
+          bookingCode,
+          customerId: customer.id,
+          storeId: dto.storeId,
+          startTime: start,
+          endTime: end,
+          dayRent: rentDays,
+          rentAmount: totalRentAmount,
+          depositAmount: depositAmount,
+          commissionAmount: commissionAmount,
+          status: newBookingStatus,
+        },
+      });
+
+      await tx.bookingDetail.create({
+        data: {
+          bookingId: booking.id,
+          modelId: dto.modelId,
+          vehicleItemId: dto.vehicleItemId,
+          quantity: 1,
+          pricePerUnit: rentPricePerDay,
+          subTotal: totalRentAmount,
+        },
+      });
+
+      await tx.vehicleItem.update({
+        where: { id: dto.vehicleItemId },
+        data: { status: newVehicleStatus },
+      });
+
+      // Tạo bản ghi Payment
+      await tx.payment.create({
+        data: {
+          bookingId: booking.id,
+          amount: handoverNow ? totalRentAmount : depositAmount,
+          paymentMethod: 0, // 0: Cash / Tiền mặt
+          paymentType: handoverNow ? 0 : 1, // 0: FullPayment, 1: DepositOnly
+          paymentStatus: 1, // 1: Success
+          paymentTime: new Date(),
+          transactionRef: `PAY-WALK-${booking.id}-${Date.now().toString().slice(-4)}`,
+        },
+      });
+
+      // Nếu bàn giao ngay, khấu trừ hoa hồng sàn nếu có
+      if (handoverNow && commissionAmount > 0) {
+        const wallet = await tx.partnerWallet.findUnique({
+          where: { partnerId },
+        });
+        if (wallet) {
+          const balance = Number(wallet.balance);
+          const newBalance = balance - commissionAmount;
+          await tx.partnerWallet.update({
+            where: { id: wallet.id },
+            data: { balance: newBalance },
+          });
+          await tx.walletHistory.create({
+            data: {
+              walletId: wallet.id,
+              bookingId: booking.id,
+              type: 1, // Commission_Deduction
+              amount: commissionAmount,
+              balanceBefore: balance,
+              balanceAfter: newBalance,
+              description: `Khấu trừ hoa hồng sàn đơn tại quầy ${booking.bookingCode} (${commissionAmount.toLocaleString('vi-VN')} đ)`,
+            },
+          });
+        }
+      }
+
+      return booking;
     });
   }
 }

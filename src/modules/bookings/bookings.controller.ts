@@ -19,6 +19,7 @@ import {
 import { BookingsService } from './bookings.service';
 import { CreateBookingDto } from './dto/create-booking.dto';
 import { CancelBookingDto } from './dto/cancel-booking.dto';
+import { CreateWalkInBookingDto } from './dto/create-walkin-booking.dto';
 import { JwtAuthGuard } from '../../auth/jwt-auth.guard';
 import { RolesGuard } from '../../auth/roles.guard';
 import { Roles } from '../../auth/roles.decorator';
@@ -110,6 +111,17 @@ export class PartnerBookingsController {
     const statusNum = status !== undefined && status !== '' ? parseInt(status, 10) : undefined;
     const storeIdNum = storeId !== undefined && storeId !== '' ? parseInt(storeId, 10) : undefined;
     return this.bookingsService.findPartnerBookings(req.user.id, statusNum, storeIdNum);
+  }
+
+  @Post('walk-in')
+  @ApiOperation({
+    summary: 'Tạo đơn thuê trực tiếp tại quầy cho khách vãng lai',
+    description: 'Dành cho nhân viên cửa hàng tạo đơn nhanh khi khách đến thuê trực tiếp, đồng nhất số lượng xe.',
+  })
+  @ApiResponse({ status: 201, description: 'Tạo đơn thành công' })
+  @ApiResponse({ status: 400, description: 'Xe không khả dụng hoặc dữ liệu không hợp lệ' })
+  createWalkInBooking(@Request() req: any, @Body() dto: CreateWalkInBookingDto) {
+    return this.bookingsService.createWalkInBooking(req.user.id, dto);
   }
 
   @Post(':id/handover')
