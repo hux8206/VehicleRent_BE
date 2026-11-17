@@ -70,16 +70,16 @@ export class CreateStoreDto {
   @IsString()
   refundCondition?: string;
 
-  // ── Thông tin ngân hàng nhận tiền (lưu vào User.partner) ─────────────────
+  // ── Thông tin ngân hàng nhận tiền (lưu vào User.partner - tùy chọn) ─────────────────
 
-  @ApiProperty({ example: '9876543210', description: 'Số tài khoản ngân hàng nhận doanh thu' })
+  @ApiPropertyOptional({ example: '9876543210', description: 'Số tài khoản ngân hàng nhận doanh thu' })
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  bankAccountNum: string;
+  bankAccountNum?: string;
 
-  @ApiProperty({ example: 'Vietcombank' })
+  @ApiPropertyOptional({ example: 'Vietcombank' })
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  bankName: string;
+  bankName?: string;
 }
 

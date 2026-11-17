@@ -28,14 +28,16 @@ export class StoresService {
    */
   async create(partnerId: number, dto: CreateStoreDto) {
     return this.prisma.$transaction(async (tx) => {
-      // 1. Cập nhật thông tin ngân hàng vào profile Partner
-      await tx.user.update({
-        where: { id: partnerId },
-        data: {
-          bankAccountNum: dto.bankAccountNum,
-          bankName: dto.bankName,
-        },
-      });
+      // 1. Cập nhật thông tin ngân hàng vào profile Partner (nếu có cung cấp)
+      if (dto.bankAccountNum || dto.bankName) {
+        await tx.user.update({
+          where: { id: partnerId },
+          data: {
+            ...(dto.bankAccountNum ? { bankAccountNum: dto.bankAccountNum } : {}),
+            ...(dto.bankName ? { bankName: dto.bankName } : {}),
+          },
+        });
+      }
 
       // 2. Tạo Store — status = 0 (PENDING, chờ Admin duyệt)
       const store = await tx.store.create({
