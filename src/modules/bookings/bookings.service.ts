@@ -1001,17 +1001,31 @@ export class BookingsService {
     }
 
     // 2. Kiểm tra dòng xe & xe vật lý
-    const vehicleItem = await this.prisma.vehicleItem.findUnique({
-      where: { id: dto.vehicleItemId },
+    const itemIds: number[] = Array.isArray(dto.vehicleItemIds) && dto.vehicleItemIds.length > 0
+      ? dto.vehicleItemIds
+      : (dto.vehicleItemId ? [dto.vehicleItemId] : []);
+
+    if (itemIds.length === 0) {
+      throw new BadRequestException('Vui lòng chọn ít nhất một xe vật lý bàn giao');
+    }
+
+    const vehicleItems = await this.prisma.vehicleItem.findMany({
+      where: { id: { in: itemIds } },
       include: { model: true },
     });
-    if (!vehicleItem) throw new NotFoundException('Xe vật lý không tồn tại');
-    if (vehicleItem.model.storeId !== dto.storeId || vehicleItem.modelId !== dto.modelId) {
-      throw new BadRequestException('Xe vật lý không thuộc dòng xe hoặc chi nhánh đã chọn');
+
+    if (vehicleItems.length !== itemIds.length) {
+      throw new NotFoundException('Một hoặc nhiều xe vật lý được chọn không tồn tại');
     }
-    if (vehicleItem.status !== 0) {
-      const stText = vehicleItem.status === 1 ? 'đang giữ chỗ' : vehicleItem.status === 2 ? 'đang cho thuê' : 'đang bảo dưỡng';
-      throw new BadRequestException(`Xe biển số ${vehicleItem.licensePlate} hiện ${stText}, không thể gán cho đơn mới`);
+
+    for (const item of vehicleItems) {
+      if (item.model.storeId !== dto.storeId || item.modelId !== dto.modelId) {
+        throw new BadRequestException(`Xe biển số ${item.licensePlate} không thuộc dòng xe hoặc chi nhánh đã chọn`);
+      }
+      if (item.status !== 0) {
+        const stText = item.status === 1 ? 'đang giữ chỗ' : item.status === 2 ? 'đang cho thuê' : 'đang bảo dưỡng';
+        throw new BadRequestException(`Xe biển số ${item.licensePlate} hiện ${stText}, không thể gán cho đơn mới`);
+      }
     }
 
     // 3. Kiểm tra thời gian
@@ -1024,10 +1038,10 @@ export class BookingsService {
     // 4. Tính toán số ngày và tiền tệ
     const diffHours = (end.getTime() - start.getTime()) / (1000 * 60 * 60);
     const rentDays = Math.max(1, Math.ceil(diffHours / 24));
-    const rentPricePerDay = dto.rentPrice !== undefined ? Number(dto.rentPrice) : Number(vehicleItem.model.rentPrice);
-    const totalRentAmount = dto.totalAmount !== undefined ? Number(dto.totalAmount) : rentDays * rentPricePerDay;
-    const defaultDepositPercent = Number(store.rentalPolicy?.depositPercent || 15);
-    const depositAmount = dto.depositAmount !== undefined ? Number(dto.depositAmount) : Math.round(totalRentAmount * (defaultDepositPercent / 100));
+    const rentPricePerDay = dto.rentPrice !== undefined ? Number(dto.rentPrice) : Number(vehicleItems[0].model.rentPrice);
+    const calculatedTotal = rentDays * rentPricePerDay * vehicleItems.length;
+    const totalRentAmount = dto.totalAmount !== undefined ? Number(dto.totalAmount) : calculatedTotal;
+    const depositAmount = dto.depositAmount !== undefined ? Number(dto.depositAmount) : 0;
     const commissionAmount = Math.round(totalRentAmount * 0.10);
 
     // 5. Tìm hoặc tạo Customer user cho khách vãng lai
@@ -1085,29 +1099,32 @@ export class BookingsService {
         },
       });
 
-      await tx.bookingDetail.create({
-        data: {
-          bookingId: booking.id,
-          modelId: dto.modelId,
-          vehicleItemId: dto.vehicleItemId,
-          quantity: 1,
-          pricePerUnit: rentPricePerDay,
-          subTotal: totalRentAmount,
-        },
-      });
+      const subTotalPerItem = rentDays * rentPricePerDay;
+      for (const item of vehicleItems) {
+        await tx.bookingDetail.create({
+          data: {
+            bookingId: booking.id,
+            modelId: dto.modelId,
+            vehicleItemId: item.id,
+            quantity: 1,
+            pricePerUnit: rentPricePerDay,
+            subTotal: subTotalPerItem,
+          },
+        });
 
-      await tx.vehicleItem.update({
-        where: { id: dto.vehicleItemId },
-        data: { status: newVehicleStatus },
-      });
+        await tx.vehicleItem.update({
+          where: { id: item.id },
+          data: { status: newVehicleStatus },
+        });
+      }
 
       // Tạo bản ghi Payment
       await tx.payment.create({
         data: {
           bookingId: booking.id,
-          amount: handoverNow ? totalRentAmount : depositAmount,
+          amount: handoverNow ? totalRentAmount : (depositAmount > 0 ? depositAmount : totalRentAmount),
           paymentMethod: 0, // 0: Cash / Tiền mặt
-          paymentType: handoverNow ? 0 : 1, // 0: FullPayment, 1: DepositOnly
+          paymentType: handoverNow ? 0 : (depositAmount > 0 ? 1 : 0), // 0: FullPayment, 1: DepositOnly
           paymentStatus: 1, // 1: Success
           paymentTime: new Date(),
           transactionRef: `PAY-WALK-${booking.id}-${Date.now().toString().slice(-4)}`,

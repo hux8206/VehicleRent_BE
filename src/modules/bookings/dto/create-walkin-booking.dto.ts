@@ -1,6 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
+  IsArray,
   IsBoolean,
   IsDateString,
   IsInt,
@@ -22,10 +23,25 @@ export class CreateWalkInBookingDto {
   @Type(() => Number)
   modelId: number;
 
-  @ApiProperty({ example: 5, description: 'ID biển số xe vật lý được chọn (phải có status = 0 Sẵn sàng)' })
+  @ApiPropertyOptional({ example: 5, description: 'ID biển số xe vật lý được chọn (cho đơn 1 xe)' })
+  @IsOptional()
   @IsInt()
   @Type(() => Number)
-  vehicleItemId: number;
+  vehicleItemId?: number;
+
+  @ApiPropertyOptional({ example: [5, 6], description: 'Danh sách ID biển số xe vật lý được chọn (khi thuê nhiều xe)' })
+  @IsOptional()
+  @IsArray()
+  @IsInt({ each: true })
+  @Type(() => Number)
+  vehicleItemIds?: number[];
+
+  @ApiPropertyOptional({ example: 1, description: 'Số lượng xe thuê' })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Type(() => Number)
+  quantity?: number;
 
   @ApiProperty({ example: 'Nguyễn Văn A', description: 'Họ tên khách hàng thuê trực tiếp' })
   @IsString()
