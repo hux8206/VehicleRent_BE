@@ -376,7 +376,7 @@ export class PaymentsService {
             amount: paidAmount,
             balanceBefore: balance,
             balanceAfter: newBalance,
-            description: `Cộng tiền thanh toán đơn ${booking.bookingCode} (+${paidAmount.toLocaleString('vi-VN')} đ)`,
+            description: `Cộng tiền thanh toán đơn ${booking.bookingCode}`,
           },
         });
       } else {

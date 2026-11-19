@@ -508,7 +508,9 @@ export class BookingsService {
                 amount: refundAmountNum,
                 balanceBefore: currentBal,
                 balanceAfter: newBal,
-                description: `Thu hồi tiền hoàn cọc đơn ${booking.bookingCode} (-${refundAmountNum.toLocaleString('vi-VN')} đ) [${policyNote}]`,
+                description: policyNote
+                  ? `Hoàn cọc hủy đơn ${booking.bookingCode} [${policyNote.split('(')[0].trim()}]`
+                  : `Hoàn cọc hủy đơn ${booking.bookingCode}`,
               },
             });
           }
@@ -689,7 +691,7 @@ export class BookingsService {
               amount: commission,
               balanceBefore: balance,
               balanceAfter: newBalance,
-              description: `Khấu trừ hoa hồng sàn đơn ${booking.bookingCode} (${commission.toLocaleString('vi-VN')} đ) sau khi bàn giao xe`,
+              description: `Khấu trừ hoa hồng sàn đơn ${booking.bookingCode}`,
             },
           });
         }
@@ -1132,7 +1134,7 @@ export class BookingsService {
               amount: commissionAmount,
               balanceBefore: balance,
               balanceAfter: newBalance,
-              description: `Khấu trừ hoa hồng sàn đơn tại quầy ${booking.bookingCode} (${commissionAmount.toLocaleString('vi-VN')} đ)`,
+              description: `Khấu trừ hoa hồng sàn đơn tại quầy ${booking.bookingCode}`,
             },
           });
         }
