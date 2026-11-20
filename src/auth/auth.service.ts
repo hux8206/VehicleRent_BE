@@ -160,6 +160,7 @@ export class AuthService {
         bankAccountNum: true,
         bankName: true,
         ownerPasswordHash: true,
+        ownerPasswordEnabled: true,
         createdAt: true,
         partnerWallet: {
           include: {
@@ -233,6 +234,7 @@ export class AuthService {
     return {
       ...rest,
       hasOwnerPassword: !!ownerPasswordHash,
+      isOwnerPasswordEnabled: user.ownerPasswordEnabled !== false,
     };
   }
 

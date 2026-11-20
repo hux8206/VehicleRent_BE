@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsNotEmpty, IsOptional, IsString, MinLength } from 'class-validator';
+import { IsBoolean, IsNotEmpty, IsOptional, IsString, MinLength } from 'class-validator';
 
 export class SetOwnerPasswordDto {
   @ApiPropertyOptional({ example: '123456', description: 'Mật khẩu hiện tại (nếu đã từng đặt)' })
@@ -19,5 +19,11 @@ export class VerifyOwnerPasswordDto {
   @IsString()
   @IsNotEmpty({ message: 'Vui lòng nhập mật khẩu chủ cửa hàng' })
   password: string;
+}
+
+export class ToggleOwnerPasswordDto {
+  @ApiProperty({ example: true, description: 'Bật hoặc tắt mật khẩu bảo vệ phân hệ chủ cửa hàng' })
+  @IsBoolean()
+  enabled: boolean;
 }
 

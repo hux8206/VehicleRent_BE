@@ -6,7 +6,7 @@ import { UpdateStoreDto } from './dto/update-store.dto';
 import { UpsertRentalPolicyDto } from './dto/rental-policy.dto';
 import { RejectStoreDto } from './dto/reject-store.dto';
 import { CreateStoreUpdateRequestDto, RejectStoreUpdateRequestDto } from './dto/store-update-request.dto';
-import { SetOwnerPasswordDto, VerifyOwnerPasswordDto } from './dto/owner-security.dto';
+import { SetOwnerPasswordDto, VerifyOwnerPasswordDto, ToggleOwnerPasswordDto } from './dto/owner-security.dto';
 import { UpdateStoreStatusDto } from './dto/update-store-status.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
@@ -38,6 +38,12 @@ export class StoresController {
   @ApiOperation({ summary: 'Xác thực mật khẩu chủ cửa hàng để mở khóa Owner Portal' })
   verifyOwnerPassword(@Request() req: any, @Body() dto: VerifyOwnerPasswordDto) {
     return this.storesService.verifyOwnerPassword(req.user.id, dto);
+  }
+
+  @Post('security/toggle-owner-password')
+  @ApiOperation({ summary: 'Bật hoặc tắt mật khẩu bảo vệ phân hệ chủ cửa hàng' })
+  toggleOwnerPassword(@Request() req: any, @Body() dto: ToggleOwnerPasswordDto) {
+    return this.storesService.toggleOwnerPassword(req.user.id, dto);
   }
 
   @Get('update-requests')

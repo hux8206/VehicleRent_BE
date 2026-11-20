@@ -4,7 +4,7 @@ import { CreateStoreDto } from './dto/create-store.dto';
 import { UpdateStoreDto } from './dto/update-store.dto';
 import { UpsertRentalPolicyDto } from './dto/rental-policy.dto';
 import { CreateStoreUpdateRequestDto } from './dto/store-update-request.dto';
-import { SetOwnerPasswordDto, VerifyOwnerPasswordDto } from './dto/owner-security.dto';
+import { SetOwnerPasswordDto, VerifyOwnerPasswordDto, ToggleOwnerPasswordDto } from './dto/owner-security.dto';
 import * as bcrypt from 'bcryptjs';
 
 // Hằng số trạng thái cửa hàng
@@ -450,9 +450,12 @@ export class StoresService {
   async getOwnerPasswordStatus(partnerId: number) {
     const user = await this.prisma.user.findUnique({
       where: { id: partnerId },
-      select: { ownerPasswordHash: true },
+      select: { ownerPasswordHash: true, ownerPasswordEnabled: true },
     });
-    return { hasOwnerPassword: !!user?.ownerPasswordHash };
+    return {
+      hasOwnerPassword: !!user?.ownerPasswordHash,
+      isOwnerPasswordEnabled: user?.ownerPasswordEnabled !== false,
+    };
   }
 
   async setOwnerPassword(partnerId: number, dto: SetOwnerPasswordDto) {
@@ -474,7 +477,10 @@ export class StoresService {
     const hashed = await bcrypt.hash(dto.newPassword, 10);
     await this.prisma.user.update({
       where: { id: partnerId },
-      data: { ownerPasswordHash: hashed },
+      data: {
+        ownerPasswordHash: hashed,
+        ownerPasswordEnabled: true,
+      },
     });
 
     return { success: true, message: 'Thiết lập mật khẩu chủ cửa hàng thành công' };
@@ -486,6 +492,10 @@ export class StoresService {
     });
     if (!user) throw new NotFoundException('Người dùng không tồn tại');
 
+    if (user.ownerPasswordEnabled === false) {
+      return { verified: true };
+    }
+
     if (!user.ownerPasswordHash) {
       return { verified: false, requiresSetup: true };
     }
@@ -496,6 +506,30 @@ export class StoresService {
     }
 
     return { verified: true };
+  }
+
+  async toggleOwnerPassword(partnerId: number, dto: ToggleOwnerPasswordDto) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: partnerId },
+    });
+    if (!user) throw new NotFoundException('Người dùng không tồn tại');
+
+    if (dto.enabled && !user.ownerPasswordHash) {
+      throw new BadRequestException('Vui lòng thiết lập mật khẩu chủ cửa hàng trước khi bật');
+    }
+
+    await this.prisma.user.update({
+      where: { id: partnerId },
+      data: { ownerPasswordEnabled: dto.enabled },
+    });
+
+    return {
+      success: true,
+      isOwnerPasswordEnabled: dto.enabled,
+      message: dto.enabled
+        ? 'Đã bật bảo vệ mật khẩu chủ cửa hàng'
+        : 'Đã tắt mật khẩu chủ cửa hàng',
+    };
   }
 
   async deleteStore(partnerId: number, storeId: number) {
