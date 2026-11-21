@@ -47,10 +47,5 @@ export class CreateFeedbackDto {
   @IsString()
   @IsNotEmpty()
   content: string;
-
-  @ApiPropertyOptional({ description: 'ID người dùng nếu đã đăng nhập' })
-  @IsOptional()
-  @IsInt()
-  userId?: number;
 }
 

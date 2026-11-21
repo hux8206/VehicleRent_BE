@@ -325,6 +325,44 @@ async function main() {
   console.log(`✅ Customer 1 created/verified: ${customer1.email} (${customer1.fullName})`);
   console.log(`✅ Customer 2 created/verified: ${customer2.email} (${customer2.fullName})`);
 
+  // 6. Seed Promotions
+  console.log('🏷️ Seeding Promotions...');
+  await prisma.promotion.upsert({
+    where: { code: 'CHAOBANMOI' },
+    update: {},
+    create: {
+      code: 'CHAOBANMOI',
+      title: 'Giảm 10% Chuyến Đầu',
+      description: 'Nhập mã ưu đãi khi xác nhận thanh toán đặt cọc cho mọi dòng xe trên hệ thống.',
+      discountType: 0,
+      discountValue: 10,
+      minRentDays: 1,
+      maxDiscount: 100000,
+      tag: 'TÂN THỦ',
+      bullets: ['Áp dụng từ đơn đầu tiên', 'Giữ xe 10 phút chống xung đột'],
+      usageLimit: 1000,
+      isActive: true,
+    },
+  });
+
+  await prisma.promotion.upsert({
+    where: { code: 'VIETNAMROAD' },
+    update: {},
+    create: {
+      code: 'VIETNAMROAD',
+      title: 'Giảm 15% – 25% Thuê Dài Ngày',
+      description: 'Ưu đãi giảm trực tiếp theo ngày cho các chuyến du lịch, công tác từ 3 ngày trở lên.',
+      discountType: 0,
+      discountValue: 15,
+      minRentDays: 3,
+      maxDiscount: 300000,
+      tag: 'GÓI PHỔ BIẾN',
+      bullets: ['Từ 3 ngày: Giảm ngay 15%', 'Từ 7 ngày: Giảm ngay 25%'],
+      usageLimit: 1000,
+      isActive: true,
+    },
+  });
+
   console.log('🎉 Seeding successfully completed!');
 }
 

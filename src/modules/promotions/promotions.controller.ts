@@ -16,6 +16,7 @@ import { ValidatePromotionDto } from './dto/validate-promotion.dto';
 import { JwtAuthGuard } from '../../auth/jwt-auth.guard';
 import { RolesGuard } from '../../auth/roles.guard';
 import { Roles } from '../../auth/roles.decorator';
+import { Throttle } from '@nestjs/throttler';
 
 @ApiTags('Promotions & Discounts')
 @Controller('promotions')
@@ -29,6 +30,7 @@ export class PublicPromotionsController {
   }
 
   @Post('validate')
+  @Throttle({ default: { limit: 30, ttl: 60000 } })
   @ApiOperation({ summary: 'Kiểm tra tính hợp lệ và tính mức giảm giá của mã' })
   validatePromotion(@Body() dto: ValidatePromotionDto) {
     return this.promotionsService.validate(dto);

@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
@@ -223,7 +224,17 @@ export class BookingsService {
       const finalRentAmount = Math.max(0, rentAmount - discountAmount);
       const depositAmount =
         paymentType === 1 ? Math.round((finalRentAmount * effectiveDepositPercent) / 100) : finalRentAmount;
-      const commissionAmount = Math.round(finalRentAmount * commissionRate);
+
+      // Ưu đãi đối tác mới: 5 đơn thành công đầu tiên (status in [1, 3, 4]) được miễn 100% hoa hồng sàn (0đ)
+      const partnerId = model.store.partnerId;
+      const partnerSuccessfulBookingsCount = await tx.booking.count({
+        where: {
+          store: { partnerId },
+          status: { in: [1, 3, 4] },
+        },
+      });
+      const isFreeCommission = partnerSuccessfulBookingsCount < 5;
+      const commissionAmount = isFreeCommission ? 0 : Math.round(finalRentAmount * commissionRate);
 
       // ── 5. Sinh bookingCode ───────────────────────────────────────────────
       const now = new Date();
@@ -671,29 +682,54 @@ export class BookingsService {
         },
       });
 
-      const commission = Number(booking.commissionAmount);
-      if (commission > 0 && !existingCommission) {
+      // Kiểm tra chính sách ưu đãi đối tác mới: 5 đơn thành công đầu tiên miễn 100% hoa hồng sàn
+      const previousSuccessfulCount = await tx.booking.count({
+        where: {
+          store: { partnerId: booking.store.partnerId },
+          status: { in: [3, 4] },
+          id: { not: booking.id },
+        },
+      });
+      const isFreeCommission = previousSuccessfulCount < 5 || Number(booking.commissionAmount) === 0;
+      const commission = isFreeCommission ? 0 : Number(booking.commissionAmount);
+
+      if (!existingCommission) {
         const wallet = await tx.partnerWallet.findUnique({
           where: { partnerId: booking.store.partnerId },
         });
         if (wallet) {
-          const balance = Number(wallet.balance);
-          const newBalance = balance - commission;
-          await tx.partnerWallet.update({
-            where: { id: wallet.id },
-            data: { balance: newBalance },
-          });
-          await tx.walletHistory.create({
-            data: {
-              walletId: wallet.id,
-              bookingId: booking.id,
-              type: 1, // Commission_Deduction
-              amount: commission,
-              balanceBefore: balance,
-              balanceAfter: newBalance,
-              description: `Khấu trừ hoa hồng sàn đơn ${booking.bookingCode}`,
-            },
-          });
+          if (commission === 0) {
+            // Ghi nhận lịch sử miễn phí hoa hồng sàn (0đ) cho đối tác mới
+            await tx.walletHistory.create({
+              data: {
+                walletId: wallet.id,
+                bookingId: booking.id,
+                type: 1, // Commission_Deduction
+                amount: 0,
+                balanceBefore: Number(wallet.balance),
+                balanceAfter: Number(wallet.balance),
+                description: `[Ưu đãi đối tác mới] Miễn 100% hoa hồng sàn đơn ${booking.bookingCode} (${Math.min(5, previousSuccessfulCount + 1)}/5)`,
+              },
+            });
+          } else {
+            const balance = Number(wallet.balance);
+            const newBalance = balance - commission;
+            await tx.partnerWallet.update({
+              where: { id: wallet.id },
+              data: { balance: newBalance },
+            });
+            await tx.walletHistory.create({
+              data: {
+                walletId: wallet.id,
+                bookingId: booking.id,
+                type: 1, // Commission_Deduction
+                amount: commission,
+                balanceBefore: balance,
+                balanceAfter: newBalance,
+                description: `Khấu trừ hoa hồng sàn đơn ${booking.bookingCode}`,
+              },
+            });
+          }
         }
       }
 
@@ -904,7 +940,7 @@ export class BookingsService {
       1: 'Xe tay ga',
       2: 'Côn tay',
       3: 'Xe điện',
-      4: 'Ô tô tự lái',
+      4: 'Ô tô',
     };
     const vehicleCategoryDistribution = [0, 1, 2, 3, 4].map((type) => {
       const modelsOfType = allModels.filter((m) => m.type === type);
@@ -1042,7 +1078,18 @@ export class BookingsService {
     const calculatedTotal = rentDays * rentPricePerDay * vehicleItems.length;
     const totalRentAmount = dto.totalAmount !== undefined ? Number(dto.totalAmount) : calculatedTotal;
     const depositAmount = dto.depositAmount !== undefined ? Number(dto.depositAmount) : 0;
-    const commissionAmount = Math.round(totalRentAmount * 0.10);
+
+    // Ưu đãi đối tác mới: 5 đơn thành công đầu tiên (status in [1, 3, 4]) được miễn 100% hoa hồng sàn (0đ)
+    const sysConfig = await this.prisma.systemConfig.findFirst();
+    const sysCommissionRate = sysConfig ? Number(sysConfig.commissionRate) / 100 : 0.10;
+    const partnerSuccessfulBookingsCount = await this.prisma.booking.count({
+      where: {
+        store: { partnerId },
+        status: { in: [1, 3, 4] },
+      },
+    });
+    const isFreeCommission = partnerSuccessfulBookingsCount < 5;
+    const commissionAmount = isFreeCommission ? 0 : Math.round(totalRentAmount * sysCommissionRate);
 
     // 5. Tìm hoặc tạo Customer user cho khách vãng lai
     const phoneClean = dto.customerPhone.trim();
@@ -1112,10 +1159,13 @@ export class BookingsService {
           },
         });
 
-        await tx.vehicleItem.update({
-          where: { id: item.id },
+        const allocated = await tx.vehicleItem.updateMany({
+          where: { id: item.id, status: 0 },
           data: { status: newVehicleStatus },
         });
+        if (allocated.count === 0) {
+          throw new ConflictException(`Xe biển số ${item.licensePlate} không còn khả dụng hoặc vừa được gán cho đơn khác.`);
+        }
       }
 
       // Tạo bản ghi Payment
@@ -1131,29 +1181,44 @@ export class BookingsService {
         },
       });
 
-      // Nếu bàn giao ngay, khấu trừ hoa hồng sàn nếu có
-      if (handoverNow && commissionAmount > 0) {
+      // Nếu bàn giao ngay: xử lý hoa hồng ví đối tác
+      if (handoverNow) {
         const wallet = await tx.partnerWallet.findUnique({
           where: { partnerId },
         });
         if (wallet) {
-          const balance = Number(wallet.balance);
-          const newBalance = balance - commissionAmount;
-          await tx.partnerWallet.update({
-            where: { id: wallet.id },
-            data: { balance: newBalance },
-          });
-          await tx.walletHistory.create({
-            data: {
-              walletId: wallet.id,
-              bookingId: booking.id,
-              type: 1, // Commission_Deduction
-              amount: commissionAmount,
-              balanceBefore: balance,
-              balanceAfter: newBalance,
-              description: `Khấu trừ hoa hồng sàn đơn tại quầy ${booking.bookingCode}`,
-            },
-          });
+          if (commissionAmount === 0) {
+            // Ưu đãi đối tác mới: ghi nhận 0đ hoa hồng
+            await tx.walletHistory.create({
+              data: {
+                walletId: wallet.id,
+                bookingId: booking.id,
+                type: 1, // Commission_Deduction
+                amount: 0,
+                balanceBefore: Number(wallet.balance),
+                balanceAfter: Number(wallet.balance),
+                description: `[Ưu đãi đối tác mới] Miễn 100% hoa hồng sàn đơn tại quầy ${booking.bookingCode} (${Math.min(5, partnerSuccessfulBookingsCount + 1)}/5)`,
+              },
+            });
+          } else {
+            const balance = Number(wallet.balance);
+            const newBalance = balance - commissionAmount;
+            await tx.partnerWallet.update({
+              where: { id: wallet.id },
+              data: { balance: newBalance },
+            });
+            await tx.walletHistory.create({
+              data: {
+                walletId: wallet.id,
+                bookingId: booking.id,
+                type: 1, // Commission_Deduction
+                amount: commissionAmount,
+                balanceBefore: balance,
+                balanceAfter: newBalance,
+                description: `Khấu trừ hoa hồng sàn đơn tại quầy ${booking.bookingCode}`,
+              },
+            });
+          }
         }
       }
 

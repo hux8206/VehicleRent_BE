@@ -622,7 +622,21 @@ export class PaymentsService {
       },
     });
     if (!wallet) throw new NotFoundException('Không tìm thấy ví đối tác');
-    return wallet;
+
+    const successfulBookingsCount = await this.prisma.booking.count({
+      where: {
+        store: { partnerId },
+        status: { in: [1, 3, 4] },
+      },
+    });
+    const freeCommissionRemaining = Math.max(0, 5 - successfulBookingsCount);
+
+    return {
+      ...wallet,
+      freeCommissionRemaining,
+      freeCommissionTotal: 5,
+      successfulBookingsCount,
+    };
   }
 
   async getWalletHistory(partnerId: number, page = 1, limit = 20, storeId?: number) {

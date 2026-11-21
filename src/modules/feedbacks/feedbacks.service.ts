@@ -7,8 +7,9 @@ import { UpdateFeedbackStatusDto } from './dto/update-feedback-status.dto';
 export class FeedbacksService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async create(dto: CreateFeedbackDto, authUserId?: number) {
-    const userId = authUserId || dto.userId || null;
+  async create(dto: CreateFeedbackDto, authUserId?: number | null) {
+    // SECURITY (Vibe-Check): Only associate feedback with a verified authenticated user ID
+    const userId = authUserId || null;
 
     return this.prisma.feedback.create({
       data: {
@@ -111,6 +112,19 @@ export class FeedbacksService {
         status: dto.status,
         ...(dto.adminNote !== undefined && { adminNote: dto.adminNote }),
       },
+    });
+  }
+
+  async findMyFeedbacks(userId: number, email?: string) {
+    const conditions: any[] = [{ userId }];
+    if (email && email.trim()) {
+      conditions.push({ email: email.trim().toLowerCase() });
+    }
+    return this.prisma.feedback.findMany({
+      where: {
+        OR: conditions,
+      },
+      orderBy: { createdAt: 'desc' },
     });
   }
 
