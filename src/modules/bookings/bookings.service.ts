@@ -536,6 +536,7 @@ export class BookingsService {
         where: { id: bookingId },
         data: {
           status: 5, // Cancelled
+          cancelType: 1, // Khách tự hủy
           cancelReason: fullReason,
           cancelTime: new Date(),
           refundStatus: initialRefundStatus,
@@ -759,6 +760,20 @@ export class BookingsService {
           await tx.vehicleItem.update({
             where: { id: detail.vehicleItemId },
             data: { status: 0 }, // Available
+          });
+        }
+      }
+
+      // Tăng điểm uy tín cửa hàng khi hoàn thành đơn tốt (+1, tối đa 100)
+      if (booking.storeId) {
+        const curStore = await tx.store.findUnique({
+          where: { id: booking.storeId },
+          select: { reputationScore: true },
+        });
+        if (curStore && curStore.reputationScore < 100) {
+          await tx.store.update({
+            where: { id: booking.storeId },
+            data: { reputationScore: { increment: 1 } },
           });
         }
       }
@@ -1225,5 +1240,409 @@ export class BookingsService {
       return booking;
     });
   }
+
+  // ─── NO-SHOW & CANCEL BY STORE (CHỨC NĂNG 1) ─────────────────────────────
+
+  /** Đối tác báo khách không đến nhận xe (No-show) */
+  async noShowByStore(partnerId: number, bookingId: number) {
+    return this.prisma.$transaction(async (tx) => {
+      const booking = await tx.booking.findUnique({
+        where: { id: bookingId },
+        include: { store: true, bookingDetails: true },
+      });
+      if (!booking) throw new NotFoundException('Đơn thuê không tồn tại');
+      if (booking.store.partnerId !== partnerId) {
+        throw new ForbiddenException('Đơn thuê không thuộc cửa hàng của bạn');
+      }
+      if (booking.status !== 1) {
+        throw new BadRequestException('Chỉ có thể báo khách không đến với đơn đang ở trạng thái Chờ nhận xe (Confirmed)');
+      }
+
+      // Kiểm tra đơn đã thanh toán 100% chưa
+      // Đơn đã thanh toán 100% bắt buộc giữ xe hết kỳ thuê
+      const isFullPayment = Number(booking.depositAmount) >= Number(booking.rentAmount);
+      if (isFullPayment) {
+        throw new BadRequestException(
+          'Đơn này đã thanh toán 100% tiền thuê. Theo quy định sàn, đối tác bắt buộc phải giữ xe cho khách trong suốt toàn bộ kỳ thuê, không được báo No-show giải phóng xe.',
+        );
+      }
+
+      // Kiểm tra thời gian: Chỉ được báo No-show khi ĐÃ QUÁ GIỜ HẸN NHẬN XE
+      const now = new Date();
+      const startTime = new Date(booking.startTime);
+      if (now < startTime) {
+        throw new BadRequestException(
+          `Chưa tới giờ hẹn nhận xe (${startTime.toLocaleTimeString('vi-VN')} ${startTime.toLocaleDateString('vi-VN')}). Chỉ được báo khách không đến sau khi đã quá giờ hẹn nhận.`,
+        );
+      }
+
+      // 1. Giải phóng xe vật lý đã giữ về trạng thái Sẵn sàng (0)
+      for (const detail of booking.bookingDetails) {
+        if (detail.vehicleItemId) {
+          await tx.vehicleItem.updateMany({
+            where: { id: detail.vehicleItemId, status: 1 },
+            data: { status: 0 },
+          });
+        }
+      }
+
+      // 2. Chuyển trạng thái đơn sang Đã hủy (status = 5), cancelType = 2 (No-show)
+      // Cửa hàng giữ cọc (refundStatus = 2), KHÔNG TRỪ UY TÍN
+      return tx.booking.update({
+        where: { id: bookingId },
+        data: {
+          status: 5,
+          cancelType: 2, // No-show
+          cancelReason: 'Cửa hàng báo khách không đến nhận xe sau giờ hẹn (No-show) • Cửa hàng giữ cọc theo quy định',
+          cancelTime: now,
+          refundStatus: 2, // Nhà xe giữ cọc
+          refundAmount: 0,
+        },
+      });
+    });
+  }
+
+  /** Đối tác tự hủy đơn vì hết xe / không có xe giao */
+  async cancelByStore(
+    partnerId: number,
+    bookingId: number,
+    dto: { reason: string; isForceMajeure?: boolean; forceMajeureProof?: string },
+  ) {
+    return this.prisma.$transaction(async (tx) => {
+      const booking = await tx.booking.findUnique({
+        where: { id: bookingId },
+        include: { store: true, bookingDetails: true },
+      });
+      if (!booking) throw new NotFoundException('Đơn thuê không tồn tại');
+      if (booking.store.partnerId !== partnerId) {
+        throw new ForbiddenException('Đơn thuê không thuộc cửa hàng của bạn');
+      }
+      if (booking.status !== 1 && booking.status !== 2) {
+        throw new BadRequestException('Chỉ có thể hủy đơn đang chờ nhận xe hoặc trong hàng chờ');
+      }
+      if (!dto?.reason?.trim()) {
+        throw new BadRequestException('Vui lòng cung cấp lý do cửa hàng không thể giao xe');
+      }
+
+      const now = new Date();
+      const depositAmt = Number(booking.depositAmount);
+
+      // Bồi thường 20% tiền cọc (hoặc tối thiểu 50.000đ)
+      const compensation = depositAmt > 0 ? Math.max(50000, Math.round(depositAmt * 0.2)) : 0;
+      const totalRefund = depositAmt + compensation; // 100% cọc + 20% bồi thường
+
+      // 1. Giải phóng xe vật lý về 0
+      for (const detail of booking.bookingDetails) {
+        if (detail.vehicleItemId) {
+          await tx.vehicleItem.updateMany({
+            where: { id: detail.vehicleItemId, status: 1 },
+            data: { status: 0 },
+          });
+        }
+      }
+
+      // 2. Khấu trừ ví đối tác: tổng tiền hoàn 100% cọc + bồi thường 20%
+      if (totalRefund > 0) {
+        const wallet = await tx.partnerWallet.findUnique({
+          where: { partnerId },
+        });
+        if (wallet) {
+          const curBal = Number(wallet.balance);
+          const newBal = curBal - totalRefund;
+          await tx.partnerWallet.update({
+            where: { id: wallet.id },
+            data: { balance: newBal },
+          });
+          await tx.walletHistory.create({
+            data: {
+              walletId: wallet.id,
+              bookingId: booking.id,
+              type: 2, // Refund / Compensation Deduction
+              amount: totalRefund,
+              balanceBefore: curBal,
+              balanceAfter: newBal,
+              description: `Khấu trừ hoàn cọc (${depositAmt.toLocaleString('vi-VN')} đ) + bồi thường 20% (${compensation.toLocaleString('vi-VN')} đ) đơn ${booking.bookingCode} do cửa hàng hủy`,
+            },
+          });
+        }
+      }
+
+      // 3. Trừ điểm uy tín cửa hàng (trừ 10 điểm, tối thiểu 0) nếu KHÔNG phải bất khả kháng
+      if (!dto.isForceMajeure && booking.storeId) {
+        const curStore = await tx.store.findUnique({
+          where: { id: booking.storeId },
+          select: { reputationScore: true },
+        });
+        if (curStore) {
+          const newScore = Math.max(0, curStore.reputationScore - 10);
+          await tx.store.update({
+            where: { id: booking.storeId },
+            data: { reputationScore: newScore },
+          });
+        }
+      }
+
+      // 4. Cập nhật booking sang Đã hủy (status = 5)
+      return tx.booking.update({
+        where: { id: bookingId },
+        data: {
+          status: 5,
+          cancelType: 3, // Cửa hàng tự hủy
+          cancelReason: `Cửa hàng tự hủy: ${dto.reason.trim()}${dto.isForceMajeure ? ' [Đính kèm giải trình bất khả kháng]' : ''}`,
+          cancelTime: now,
+          compensationAmount: compensation,
+          isForceMajeure: Boolean(dto.isForceMajeure),
+          forceMajeureProof: dto.forceMajeureProof?.trim() || null,
+          refundStatus: totalRefund > 0 ? 0 : 2, // 0: Chờ Admin/Sàn chuyển khoản hoàn cọc + bồi thường cho khách
+          refundAmount: totalRefund,
+        },
+      });
+    });
+  }
+
+  // ─── BÁO SỰ CỐ TỪ KHÁCH HÀNG (CHỨC NĂNG 2) ────────────────────────────────
+
+  /** Khách hàng báo sự cố nhà xe không có xe khi sát hoặc đã tới giờ nhận */
+  async reportIssueByCustomer(
+    customerId: number,
+    bookingId: number,
+    dto: { reason: string; bankName?: string; bankAccountNumber?: string; bankAccountName?: string },
+  ) {
+    const booking = await this.prisma.booking.findUnique({
+      where: { id: bookingId },
+      include: { store: true },
+    });
+    if (!booking) throw new NotFoundException('Đơn thuê không tồn tại');
+    if (booking.customerId !== customerId) {
+      throw new ForbiddenException('Bạn không có quyền báo cáo sự cố cho đơn này');
+    }
+    if (booking.status !== 1) {
+      throw new BadRequestException('Chỉ có thể báo sự cố đối với đơn đang ở trạng thái Chờ nhận xe');
+    }
+
+    // Điều kiện thời gian: Sát giờ nhận xe (trong vòng 2h trước) hoặc đã quá giờ hẹn nhận xe
+    const now = new Date();
+    const startTime = new Date(booking.startTime);
+    const diffHours = (startTime.getTime() - now.getTime()) / (1000 * 60 * 60);
+
+    if (diffHours > 2) {
+      throw new BadRequestException(
+        'Chức năng Báo sự cố chỉ khả dụng trong vòng 2 giờ trước giờ nhận xe hoặc sau khi đã tới giờ hẹn mà nhà xe không giao xe.',
+      );
+    }
+
+    if (!dto?.reason?.trim()) {
+      throw new BadRequestException('Vui lòng nêu rõ sự cố gặp phải với nhà xe');
+    }
+
+    return this.prisma.booking.update({
+      where: { id: bookingId },
+      data: {
+        disputeStatus: 1, // Chờ Admin đối soát
+        disputeReason: dto.reason.trim(),
+        disputeCreatedAt: now,
+        refundBankName: dto?.bankName?.trim() || booking.refundBankName,
+        refundAccountNumber: dto?.bankAccountNumber?.trim() || booking.refundAccountNumber,
+        refundAccountName: dto?.bankAccountName?.trim()?.toUpperCase() || booking.refundAccountName,
+      },
+    });
+  }
+
+  /** Admin đối soát tranh chấp: Duyệt bồi thường 100% cọc + 20% cho khách hoặc xác nhận bất khả kháng */
+  async adminResolveDispute(
+    bookingId: number,
+    dto: { isStoreFault: boolean; note?: string },
+  ) {
+    return this.prisma.$transaction(async (tx) => {
+      const booking = await tx.booking.findUnique({
+        where: { id: bookingId },
+        include: { store: true, bookingDetails: true },
+      });
+      if (!booking) throw new NotFoundException('Đơn thuê không tồn tại');
+      if (booking.disputeStatus !== 1) {
+        throw new BadRequestException('Đơn không ở trạng thái chờ đối soát tranh chấp');
+      }
+
+      const now = new Date();
+
+      if (dto.isStoreFault) {
+        // Đúng lỗi cửa hàng: Hoàn 100% cọc + Bồi thường 20% (min 50k)
+        const depositAmt = Number(booking.depositAmount);
+        const compensation = depositAmt > 0 ? Math.max(50000, Math.round(depositAmt * 0.2)) : 0;
+        const totalRefund = depositAmt + compensation;
+
+        // Giải phóng xe nếu còn giữ
+        for (const detail of booking.bookingDetails) {
+          if (detail.vehicleItemId) {
+            await tx.vehicleItem.updateMany({
+              where: { id: detail.vehicleItemId, status: 1 },
+              data: { status: 0 },
+            });
+          }
+        }
+
+        // Khấu trừ ví đối tác
+        if (totalRefund > 0) {
+          const wallet = await tx.partnerWallet.findUnique({
+            where: { partnerId: booking.store.partnerId },
+          });
+          if (wallet) {
+            const curBal = Number(wallet.balance);
+            const newBal = curBal - totalRefund;
+            await tx.partnerWallet.update({
+              where: { id: wallet.id },
+              data: { balance: newBal },
+            });
+            await tx.walletHistory.create({
+              data: {
+                walletId: wallet.id,
+                bookingId: booking.id,
+                type: 2,
+                amount: totalRefund,
+                balanceBefore: curBal,
+                balanceAfter: newBal,
+                description: `Admin đối soát: Khấu trừ hoàn cọc + bồi thường 20% đơn ${booking.bookingCode} do lỗi nhà xe`,
+              },
+            });
+          }
+        }
+
+        // Trừ điểm uy tín cửa hàng (-10 điểm)
+        if (booking.storeId) {
+          const curStore = await tx.store.findUnique({
+            where: { id: booking.storeId },
+            select: { reputationScore: true },
+          });
+          if (curStore) {
+            await tx.store.update({
+              where: { id: booking.storeId },
+              data: { reputationScore: Math.max(0, curStore.reputationScore - 10) },
+            });
+          }
+        }
+
+        return tx.booking.update({
+          where: { id: bookingId },
+          data: {
+            status: 5, // Cancelled
+            cancelType: 3, // Cửa hàng lỗi không giao xe
+            cancelReason: `Admin xử lý tranh chấp: Nhà xe không có xe giao (${dto.note || 'Lỗi cửa hàng'})`,
+            cancelTime: now,
+            disputeStatus: 2, // Resolved_Refunded
+            compensationAmount: compensation,
+            refundStatus: 0, // Chờ chuyển khoản
+            refundAmount: totalRefund,
+          },
+        });
+      } else {
+        // Cửa hàng chứng minh bất khả kháng hoặc không phải lỗi nhà xe: Miễn phạt
+        return tx.booking.update({
+          where: { id: bookingId },
+          data: {
+            disputeStatus: 3, // Resolved_Exempt (Miễn phạt)
+            cancelReason: booking.cancelReason
+              ? `${booking.cancelReason} • [Admin: ${dto.note || 'Miễn phạt do sự cố bất khả kháng'}]`
+              : `[Admin: ${dto.note || 'Miễn phạt do sự cố bất khả kháng'}]`,
+          },
+        });
+      }
+    });
+  }
+
+  // ─── QUẢN LÝ ẢNH CCCD BẢN GIAO XE - NGHỊ ĐỊNH 13 (CHỨC NĂNG 3) ────────────
+
+  /** Lưu ảnh CCCD lúc bàn giao xe */
+  async saveIdCard(
+    partnerId: number,
+    bookingId: number,
+    dto: { idCardFront: string; idCardBack: string },
+  ) {
+    const booking = await this.prisma.booking.findUnique({
+      where: { id: bookingId },
+      include: { store: true },
+    });
+    if (!booking) throw new NotFoundException('Đơn thuê không tồn tại');
+    if (booking.store.partnerId !== partnerId) {
+      throw new ForbiddenException('Bạn không có quyền quản lý đơn thuê này');
+    }
+    if (!dto.idCardFront?.trim() || !dto.idCardBack?.trim()) {
+      throw new BadRequestException('Vui lòng tải lên đầy đủ ảnh CCCD 2 mặt (mặt trước và mặt sau)');
+    }
+
+    return this.prisma.booking.update({
+      where: { id: bookingId },
+      data: {
+        idCardFront: dto.idCardFront.trim(),
+        idCardBack: dto.idCardBack.trim(),
+        idCardCapturedAt: new Date(),
+        idCardDeletedAt: null,
+      },
+      select: {
+        id: true,
+        bookingCode: true,
+        idCardFront: true,
+        idCardBack: true,
+        idCardCapturedAt: true,
+      },
+    });
+  }
+
+  /** Xem ảnh CCCD (Chỉ chủ cửa hàng và Admin được quyền xem - Chuẩn NĐ 13) */
+  async getIdCard(userId: number, role: number, bookingId: number) {
+    const booking = await this.prisma.booking.findUnique({
+      where: { id: bookingId },
+      include: { store: true },
+    });
+    if (!booking) throw new NotFoundException('Đơn thuê không tồn tại');
+
+    // Phân quyền nghiêm ngặt theo Nghị định 13/2023/NĐ-CP:
+    // Chỉ Admin (role 0) hoặc chính chủ cửa hàng của đơn đó (role 1 & partnerId == userId)
+    const isAdmin = role === 0;
+    const isOwnerPartner = role === 1 && booking.store.partnerId === userId;
+    const isCustomer = role === 2 && booking.customerId === userId;
+
+    if (!isAdmin && !isOwnerPartner && !isCustomer) {
+      throw new ForbiddenException(
+        'Quyền riêng tư: Chỉ chủ cửa hàng quản lý đơn và Quản trị viên mới được phép xem ảnh CCCD (Nghị định 13/2023/NĐ-CP).',
+      );
+    }
+
+    if (booking.idCardDeletedAt) {
+      return {
+        isDeleted: true,
+        message: 'Ảnh CCCD đã được hệ thống tự động xóa vĩnh viễn sau 30 ngày theo quy định bảo mật Nghị định 13/2023/NĐ-CP.',
+        deletedAt: booking.idCardDeletedAt,
+      };
+    }
+
+    return {
+      isDeleted: false,
+      idCardFront: booking.idCardFront,
+      idCardBack: booking.idCardBack,
+      idCardCapturedAt: booking.idCardCapturedAt,
+    };
+  }
+
+  /** Cron: Tự động xóa ảnh CCCD sau 30 ngày kể từ khi đơn hoàn thành hoặc đã hủy */
+  async cleanupExpiredIdCards() {
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    return this.prisma.booking.updateMany({
+      where: {
+        status: { in: [4, 5] }, // Completed hoặc Cancelled
+        createdAt: { lt: thirtyDaysAgo },
+        OR: [
+          { idCardFront: { not: null } },
+          { idCardBack: { not: null } },
+        ],
+        idCardDeletedAt: null,
+      },
+      data: {
+        idCardFront: null,
+        idCardBack: null,
+        idCardDeletedAt: new Date(),
+      },
+    });
+  }
 }
+
 

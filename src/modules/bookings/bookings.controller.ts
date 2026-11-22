@@ -87,6 +87,16 @@ export class CustomerBookingsController {
   ) {
     return this.bookingsService.createReview(req.user.id, id, dto);
   }
+
+  @Post(':id/report-issue')
+  @ApiOperation({ summary: 'Khách hàng báo sự cố: Nhà xe không có xe khi sát/tới giờ nhận' })
+  reportIssue(
+    @Request() req: any,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: { reason: string; bankName?: string; bankAccountNumber?: string; bankAccountName?: string },
+  ) {
+    return this.bookingsService.reportIssueByCustomer(req.user.id, id, dto);
+  }
 }
 
 // ─── PARTNER BOOKING ROUTES ───────────────────────────────────────────────────
@@ -154,6 +164,38 @@ export class PartnerBookingsController {
   complete(@Request() req: any, @Param('id', ParseIntPipe) id: number) {
     return this.bookingsService.completeBooking(req.user.id, id);
   }
+
+  @Post(':id/no-show')
+  @ApiOperation({ summary: 'Cửa hàng báo khách không đến (No-show) sau giờ hẹn — Giải phóng xe, giữ cọc, không trừ uy tín' })
+  noShow(@Request() req: any, @Param('id', ParseIntPipe) id: number) {
+    return this.bookingsService.noShowByStore(req.user.id, id);
+  }
+
+  @Post(':id/cancel-by-store')
+  @ApiOperation({ summary: 'Cửa hàng tự hủy do hết xe — Hoàn 100% cọc + bồi thường 20% (min 50k), trừ điểm uy tín' })
+  cancelByStore(
+    @Request() req: any,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: { reason: string; isForceMajeure?: boolean; forceMajeureProof?: string },
+  ) {
+    return this.bookingsService.cancelByStore(req.user.id, id, dto);
+  }
+
+  @Post(':id/id-card')
+  @ApiOperation({ summary: 'Lưu ảnh CCCD 2 mặt lúc bàn giao xe (Chuẩn Nghị định 13/2023/NĐ-CP)' })
+  saveIdCard(
+    @Request() req: any,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: { idCardFront: string; idCardBack: string },
+  ) {
+    return this.bookingsService.saveIdCard(req.user.id, id, dto);
+  }
+
+  @Get(':id/id-card')
+  @ApiOperation({ summary: 'Xem ảnh CCCD bàn giao xe (Chỉ chủ cửa hàng đơn đó và Admin)' })
+  getIdCard(@Request() req: any, @Param('id', ParseIntPipe) id: number) {
+    return this.bookingsService.getIdCard(req.user.id, req.user.role, id);
+  }
 }
 
 // ─── ADMIN REVIEW MODERATION ROUTES ──────────────────────────────────────────
@@ -205,6 +247,21 @@ export class AdminStatsController {
   @ApiOperation({ summary: 'Lấy tất cả đơn thuê trên toàn hệ thống sàn' })
   getAllBookings() {
     return this.bookingsService.findAllBookingsForAdmin();
+  }
+
+  @Post('bookings/:id/resolve-dispute')
+  @ApiOperation({ summary: 'Admin đối soát tranh chấp đơn thuê giữa khách và nhà xe' })
+  resolveDispute(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: { isStoreFault: boolean; note?: string },
+  ) {
+    return this.bookingsService.adminResolveDispute(id, dto);
+  }
+
+  @Get('bookings/:id/id-card')
+  @ApiOperation({ summary: 'Admin xem ảnh CCCD bàn giao xe (Chuẩn Nghị định 13)' })
+  getAdminIdCard(@Request() req: any, @Param('id', ParseIntPipe) id: number) {
+    return this.bookingsService.getIdCard(req.user.id, req.user.role, id);
   }
 }
 

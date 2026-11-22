@@ -49,8 +49,9 @@ model Store {
   storeImage   String? @db.VarChar(500)
   status       Int     @default(0) // 0: PENDING, 1: ACTIVE, 2: REJECTED
   rejectReason String? @db.VarChar(500)
-  openTime     String? @default("07:00") @db.VarChar(10)
-  closeTime    String? @default("21:00") @db.VarChar(10)
+  openTime        String? @default("07:00") @db.VarChar(10)
+  closeTime       String? @default("21:00") @db.VarChar(10)
+  reputationScore Int     @default(100)
 
   partner       User           @relation(fields: [partnerId], references: [id])
   rentalPolicy  RentalPolicy?
@@ -127,6 +128,17 @@ model Booking {
   status           Int       @default(0) // 0: PendingPayment, 1: Confirmed, 2: WaitingQueue, 3: ActiveRental, 4: Completed, 5: Cancelled
   cancelReason     String?   @db.VarChar(500)
   cancelTime       DateTime?
+  cancelType       Int?      @default(0) // 0: None, 1: Khách tự hủy, 2: No-show (Khách không đến), 3: Cửa hàng tự hủy (Hết xe)
+  compensationAmount Decimal? @default(0.00) @db.Decimal(12, 2) // Tiền bồi thường thêm cho khách (20% cọc, tối thiểu 50.000đ)
+  isForceMajeure   Boolean?  @default(false)
+  forceMajeureProof String?  @db.Text
+  disputeStatus    Int?      @default(0) // 0: None, 1: Pending (Khách báo nhà xe không có xe), 2: Resolved_Refunded, 3: Resolved_Exempt
+  disputeReason    String?   @db.VarChar(500)
+  disputeCreatedAt DateTime?
+  idCardFront      String?   @db.VarChar(500) // Ảnh CCCD mặt trước (Chuẩn NĐ 13/2023/NĐ-CP)
+  idCardBack       String?   @db.VarChar(500) // Ảnh CCCD mặt sau (Chuẩn NĐ 13/2023/NĐ-CP)
+  idCardCapturedAt DateTime?
+  idCardDeletedAt  DateTime? // Tự động xóa sau 30 ngày hoàn thành theo NĐ 13/2023/NĐ-CP
   refundStatus     Int?      @default(0) // 0: Chờ hoàn tiền, 1: Đã hoàn tiền, 2: Không hoàn cọc
   refundBankName   String?   @db.VarChar(100)
   refundAccountNumber String? @db.VarChar(50)

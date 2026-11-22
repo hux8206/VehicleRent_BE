@@ -332,11 +332,15 @@ export class VehiclesService {
     const models = await this.prisma.vehicleModel.findMany({
       where,
       include: {
-        store: { select: { id: true, storeName: true, address: true, phoneContact: true, province: true } },
+        store: { select: { id: true, storeName: true, address: true, phoneContact: true, province: true, reputationScore: true } },
         vehicleItems: {
           select: { id: true, status: true },
         },
       },
+      orderBy: [
+        { store: { reputationScore: 'desc' } },
+        { id: 'desc' },
+      ],
       skip,
       take: limit,
     });

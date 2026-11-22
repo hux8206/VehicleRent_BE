@@ -156,7 +156,7 @@ export class StoresService {
           select: { rateStar: true },
         },
       },
-      orderBy: { id: 'desc' },
+      orderBy: [{ reputationScore: 'desc' }, { id: 'desc' }],
     });
 
     return stores.map((s) => {
