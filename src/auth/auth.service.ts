@@ -7,6 +7,7 @@ import { LoginDto } from './dto/login.dto';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import * as bcrypt from 'bcryptjs';
+import { Resend } from 'resend';
 
 @Injectable()
 export class AuthService {
@@ -434,7 +435,60 @@ export class AuthService {
       },
     });
 
-    this.logger.log(`🔑 [OTP RESET PASSWORD] Mã OTP khôi phục cho ${email} là: >>> ${otp} <<< (Hết hạn: 10 phút)`);
+    if (process.env.NODE_ENV !== 'production') {
+      this.logger.log(`🔑 [OTP RESET PASSWORD] Mã OTP khôi phục cho ${email} là: >>> ${otp} <<< (Hết hạn: 10 phút)`);
+    } else {
+      this.logger.log(`🔑 [OTP RESET PASSWORD] Đã tạo mã OTP khôi phục cho tài khoản ${email} (Hết hạn: 10 phút)`);
+    }
+
+    // Tích hợp gửi email OTP qua Resend HTTP API
+    const resendApiKey = process.env.RESEND_API_KEY || process.env.MAIL_PASS;
+    const mailFrom = process.env.MAIL_FROM || 'VehicleRent <noreply@thuexetulai.io.vn>';
+
+    if (!resendApiKey) {
+      this.logger.warn(`⚠️ [Resend] Chưa cấu hình RESEND_API_KEY hoặc MAIL_PASS. Bỏ qua bước gửi email thực tế cho ${email}.`);
+    } else {
+      try {
+        const resend = new Resend(resendApiKey);
+        const { data, error } = await resend.emails.send({
+          from: mailFrom,
+          to: [email],
+          subject: '[VehicleRent] Mã OTP đặt lại mật khẩu',
+          html: `
+<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 560px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 12px; background-color: #ffffff;">
+  <div style="text-align: center; margin-bottom: 24px;">
+    <h2 style="color: #2563eb; margin: 0; font-size: 24px; font-weight: 800; letter-spacing: -0.5px;">VehicleRent</h2>
+    <p style="color: #64748b; font-size: 13px; margin: 4px 0 0;">Nền tảng cho thuê xe tự lái uy tín</p>
+  </div>
+  <div style="border-top: 1px solid #f1f5f9; padding-top: 20px;">
+    <p style="color: #1e293b; font-size: 15px; margin: 0 0 12px;">Xin chào <strong>${user.fullName || 'Quý khách'}</strong>,</p>
+    <p style="color: #475569; font-size: 14px; line-height: 1.6; margin: 0 0 20px;">
+      Hệ thống nhận được yêu cầu khôi phục mật khẩu cho tài khoản <strong>${email}</strong>. Vui lòng sử dụng mã xác thực OTP dưới đây để hoàn tất việc đổi mật khẩu:
+    </p>
+    <div style="text-align: center; margin: 28px 0; padding: 18px; background-color: #f8fafc; border: 1px dashed #cbd5e1; border-radius: 10px;">
+      <span style="font-family: 'Courier New', Courier, monospace; font-size: 32px; font-weight: 800; letter-spacing: 8px; color: #1e40af;">${otp}</span>
+    </div>
+    <p style="color: #64748b; font-size: 13px; line-height: 1.5; margin: 0 0 12px;">
+      ⏱️ Mã OTP này có hiệu lực trong <strong>10 phút</strong>. Vì lý do bảo mật, vui lòng không chia sẻ mã này cho bất kỳ ai.
+    </p>
+    <p style="color: #94a3b8; font-size: 12px; line-height: 1.5; margin: 20px 0 0; border-top: 1px solid #f1f5f9; padding-top: 16px;">
+      Nếu bạn không yêu cầu đổi mật khẩu, vui lòng bỏ qua email này. Tài khoản của bạn vẫn được bảo vệ an toàn.
+    </p>
+  </div>
+</div>
+          `,
+          text: `Xin chào ${user.fullName || 'Quý khách'},\n\nMã OTP đặt lại mật khẩu của bạn trên VehicleRent là: ${otp}\nMã có hiệu lực trong vòng 10 phút. Tuyệt đối không chia sẻ mã này cho bất kỳ ai.\n\nNếu bạn không yêu cầu thao tác này, vui lòng bỏ qua email.`,
+        });
+
+        if (error) {
+          this.logger.error(`❌ [Resend] Gửi email OTP tới ${email} thất bại: ${JSON.stringify(error)}`);
+        } else {
+          this.logger.log(`📧 [Resend] Đã gửi email OTP thành công tới ${email}. Email ID: ${data?.id}`);
+        }
+      } catch (err: any) {
+        this.logger.error(`❌ [Resend] Lỗi ngoại lệ khi gửi email OTP tới ${email}: ${err?.message || err}`);
+      }
+    }
 
     return {
       success: true,
