@@ -128,7 +128,7 @@ model Booking {
   status           Int       @default(0) // 0: PendingPayment, 1: Confirmed, 2: WaitingQueue, 3: ActiveRental, 4: Completed, 5: Cancelled
   cancelReason     String?   @db.VarChar(500)
   cancelTime       DateTime?
-  cancelType       Int?      @default(0) // 0: None, 1: Khách tự hủy, 2: No-show (Khách không đến), 3: Cửa hàng tự hủy (Hết xe)
+  cancelType       Int?      @default(0) // 0: None, 1: Khách tự hủy, 2: Khách không đến, 3: Cửa hàng tự hủy
   compensationAmount Decimal? @default(0.00) @db.Decimal(12, 2) // Tiền bồi thường thêm cho khách (20% cọc, tối thiểu 50.000đ)
   isForceMajeure   Boolean?  @default(false)
   forceMajeureProof String?  @db.Text

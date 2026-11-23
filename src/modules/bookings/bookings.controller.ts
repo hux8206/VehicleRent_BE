@@ -166,7 +166,7 @@ export class PartnerBookingsController {
   }
 
   @Post(':id/no-show')
-  @ApiOperation({ summary: 'Cửa hàng báo khách không đến (No-show) sau giờ hẹn — Giải phóng xe, giữ cọc, không trừ uy tín' })
+  @ApiOperation({ summary: 'Cửa hàng hủy đơn do khách không đến sau khi hết ngày hẹn — Giải phóng xe, giữ cọc, không trừ uy tín' })
   noShow(@Request() req: any, @Param('id', ParseIntPipe) id: number) {
     return this.bookingsService.noShowByStore(req.user.id, id);
   }

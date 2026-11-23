@@ -1241,9 +1241,9 @@ export class BookingsService {
     });
   }
 
-  // ─── NO-SHOW & CANCEL BY STORE (CHỨC NĂNG 1) ─────────────────────────────
+  // ─── KHÁCH KHÔNG ĐẾN NHẬN XE & HỦY ĐƠN (CHỨC NĂNG 1) ─────────────────────────────
 
-  /** Đối tác báo khách không đến nhận xe (No-show) */
+  /** Đối tác hủy đơn do khách không đến nhận xe sau khi hết ngày hẹn */
   async noShowByStore(partnerId: number, bookingId: number) {
     return this.prisma.$transaction(async (tx) => {
       const booking = await tx.booking.findUnique({
@@ -1255,7 +1255,7 @@ export class BookingsService {
         throw new ForbiddenException('Đơn thuê không thuộc cửa hàng của bạn');
       }
       if (booking.status !== 1) {
-        throw new BadRequestException('Chỉ có thể báo khách không đến với đơn đang ở trạng thái Chờ nhận xe (Confirmed)');
+        throw new BadRequestException('Chỉ có thể xác nhận khách không đến với đơn đang ở trạng thái Chờ nhận xe (Confirmed)');
       }
 
       // Kiểm tra đơn đã thanh toán 100% chưa
@@ -1263,16 +1263,28 @@ export class BookingsService {
       const isFullPayment = Number(booking.depositAmount) >= Number(booking.rentAmount);
       if (isFullPayment) {
         throw new BadRequestException(
-          'Đơn này đã thanh toán 100% tiền thuê. Theo quy định sàn, đối tác bắt buộc phải giữ xe cho khách trong suốt toàn bộ kỳ thuê, không được báo No-show giải phóng xe.',
+          'Đơn này đã thanh toán 100% tiền thuê. Theo quy định của sàn, nhà xe bắt buộc phải giữ xe cho khách trong suốt toàn bộ thời gian thuê, không được hủy đơn giải phóng xe.',
         );
       }
 
-      // Kiểm tra thời gian: Chỉ được báo No-show khi ĐÃ QUÁ GIỜ HẸN NHẬN XE
+      // Kiểm tra thời gian: Chỉ được hủy đơn sau khi ĐÃ HẾT NGÀY HẸN NHẬN XE
       const now = new Date();
       const startTime = new Date(booking.startTime);
-      if (now < startTime) {
+
+      // Tính thời điểm kết thúc ngày nhận xe (23:59:59.999 của ngày hẹn nhận theo giờ Việt Nam UTC+7)
+      const vnTimeOffset = 7 * 60 * 60 * 1000;
+      const startVnTime = new Date(startTime.getTime() + vnTimeOffset);
+      const startYear = startVnTime.getUTCFullYear();
+      const startMonth = startVnTime.getUTCMonth();
+      const startDate = startVnTime.getUTCDate();
+
+      const endOfPickupDayUtc = new Date(Date.UTC(startYear, startMonth, startDate, 23, 59, 59, 999) - vnTimeOffset);
+
+      if (now < endOfPickupDayUtc) {
+        const pad = (n: number) => String(n).padStart(2, '0');
+        const formattedDate = `${pad(startDate)}/${pad(startMonth + 1)}/${startYear}`;
         throw new BadRequestException(
-          `Chưa tới giờ hẹn nhận xe (${startTime.toLocaleTimeString('vi-VN')} ${startTime.toLocaleDateString('vi-VN')}). Chỉ được báo khách không đến sau khi đã quá giờ hẹn nhận.`,
+          `Chưa hết ngày hẹn nhận xe (${formattedDate}). Nhà xe chỉ được hủy đơn sau khi kết thúc ngày hẹn nhận xe mà khách vẫn không đến nhận.`,
         );
       }
 
@@ -1286,14 +1298,14 @@ export class BookingsService {
         }
       }
 
-      // 2. Chuyển trạng thái đơn sang Đã hủy (status = 5), cancelType = 2 (No-show)
+      // 2. Chuyển trạng thái đơn sang Đã hủy (status = 5), cancelType = 2 (Khách không đến)
       // Cửa hàng giữ cọc (refundStatus = 2), KHÔNG TRỪ UY TÍN
       return tx.booking.update({
         where: { id: bookingId },
         data: {
           status: 5,
-          cancelType: 2, // No-show
-          cancelReason: 'Cửa hàng báo khách không đến nhận xe sau giờ hẹn (No-show) • Cửa hàng giữ cọc theo quy định',
+          cancelType: 2, // Khách không đến
+          cancelReason: 'Khách không đến nhận xe sau khi kết thúc ngày hẹn • Cửa hàng giữ cọc theo quy định',
           cancelTime: now,
           refundStatus: 2, // Nhà xe giữ cọc
           refundAmount: 0,
