@@ -1086,12 +1086,12 @@ export class BookingsService {
       throw new BadRequestException('Thời gian trả xe phải sau thời gian nhận xe');
     }
 
-    // 4. Tính toán số ngày và tiền tệ
+    // 4. Tính toán số ngày và tiền tệ (Cố định đơn giá theo niêm yết của dòng xe)
     const diffHours = (end.getTime() - start.getTime()) / (1000 * 60 * 60);
     const rentDays = Math.max(1, Math.ceil(diffHours / 24));
-    const rentPricePerDay = dto.rentPrice !== undefined ? Number(dto.rentPrice) : Number(vehicleItems[0].model.rentPrice);
+    const rentPricePerDay = Number(vehicleItems[0].model.rentPrice);
     const calculatedTotal = rentDays * rentPricePerDay * vehicleItems.length;
-    const totalRentAmount = dto.totalAmount !== undefined ? Number(dto.totalAmount) : calculatedTotal;
+    const totalRentAmount = calculatedTotal;
     const depositAmount = dto.depositAmount !== undefined ? Number(dto.depositAmount) : 0;
 
     // Ưu đãi đối tác mới: 5 đơn thành công đầu tiên (status in [1, 3, 4]) được miễn 100% hoa hồng sàn (0đ)
