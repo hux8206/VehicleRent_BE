@@ -44,6 +44,8 @@ model Store {
   storeName    String  @db.VarChar(255)
   province     String? @db.VarChar(100)
   address      String  @db.VarChar(500)
+  latitude     Float?
+  longitude    Float?
   phoneContact String  @db.VarChar(20)
   description  String? @db.Text
   storeImage   String? @db.VarChar(500)
@@ -275,6 +277,8 @@ model StoreUpdateRequest {
   storeName      String   @db.VarChar(255)
   province       String?  @db.VarChar(100)
   address        String   @db.VarChar(500)
+  latitude       Float?
+  longitude      Float?
   phoneContact   String   @db.VarChar(20)
   description    String?  @db.Text
   storeImage     String?  @db.VarChar(500)

@@ -1,5 +1,6 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { IsOptional, IsString } from 'class-validator';
+import { Type } from 'class-transformer';
+import { IsNumber, IsOptional, IsString } from 'class-validator';
 
 export class UpdateStoreDto {
   @ApiPropertyOptional({ example: 'Nhà xe XYZ' })
@@ -16,6 +17,18 @@ export class UpdateStoreDto {
   @IsOptional()
   @IsString()
   address?: string;
+
+  @ApiPropertyOptional({ example: 16.0613692 })
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  latitude?: number;
+
+  @ApiPropertyOptional({ example: 108.2199779 })
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  longitude?: number;
 
   @ApiPropertyOptional()
   @IsOptional()

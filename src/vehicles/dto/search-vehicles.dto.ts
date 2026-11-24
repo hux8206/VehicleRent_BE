@@ -1,6 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { IsDateString, IsInt, IsOptional, IsString, Min } from 'class-validator';
+import { IsDateString, IsInt, IsNumber, IsOptional, IsString, Min } from 'class-validator';
 
 export class SearchVehiclesDto {
   @ApiProperty({ example: '2026-11-10T08:00:00.000Z', description: 'Thời điểm bắt đầu thuê (ISO8601)' })
@@ -26,6 +26,18 @@ export class SearchVehiclesDto {
   @IsOptional()
   @IsString()
   province?: string;
+
+  @ApiPropertyOptional({ example: 16.0613692, description: 'Vĩ độ khách hàng để tính khoảng cách' })
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  lat?: number;
+
+  @ApiPropertyOptional({ example: 108.2199779, description: 'Kinh độ khách hàng để tính khoảng cách' })
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  lng?: number;
 
   @ApiPropertyOptional({ example: 1, description: 'Filter theo storeId' })
   @IsOptional()

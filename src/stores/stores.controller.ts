@@ -220,8 +220,12 @@ export class CustomerStoresController {
 
   @Get()
   @ApiOperation({ summary: 'Lấy danh sách các cửa hàng đối tác đang hoạt động (ACTIVE)' })
-  findAll() {
-    return this.storesService.findAllActive();
+  @ApiQuery({ name: 'lat', required: false, type: Number, description: 'Vĩ độ khách hàng' })
+  @ApiQuery({ name: 'lng', required: false, type: Number, description: 'Kinh độ khách hàng' })
+  findAll(@Query('lat') lat?: string, @Query('lng') lng?: string) {
+    const parsedLat = lat !== undefined && lat !== '' ? parseFloat(lat) : undefined;
+    const parsedLng = lng !== undefined && lng !== '' ? parseFloat(lng) : undefined;
+    return this.storesService.findAllActive(parsedLat, parsedLng);
   }
 
   @Get(':id')

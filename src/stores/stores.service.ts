@@ -1,5 +1,6 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { calculateHaversineDistance } from '../common/utils/geo.util';
 import { CreateStoreDto } from './dto/create-store.dto';
 import { UpdateStoreDto } from './dto/update-store.dto';
 import { UpsertRentalPolicyDto } from './dto/rental-policy.dto';
@@ -46,6 +47,8 @@ export class StoresService {
           storeName: dto.storeName,
           province: dto.province,
           address: dto.address,
+          latitude: dto.latitude,
+          longitude: dto.longitude,
           phoneContact: dto.phoneContact,
           description: dto.description,
           storeImage: dto.storeImage,
@@ -142,7 +145,7 @@ export class StoresService {
     return policy;
   }
 
-  async findAllActive() {
+  async findAllActive(lat?: number, lng?: number) {
     const stores = await this.prisma.store.findMany({
       where: {
         status: STORE_STATUS.ACTIVE,
@@ -159,17 +162,39 @@ export class StoresService {
       orderBy: [{ reputationScore: 'desc' }, { id: 'desc' }],
     });
 
-    return stores.map((s) => {
+    const hasClientCoords = typeof lat === 'number' && !isNaN(lat) && typeof lng === 'number' && !isNaN(lng);
+
+    const mapped = stores.map((s) => {
       const reviewCount = s.reviews.length;
       const totalStars = s.reviews.reduce((acc, r) => acc + r.rateStar, 0);
       const avgRating = reviewCount > 0 ? Number((totalStars / reviewCount).toFixed(1)) : 5.0;
       const { reviews, ...rest } = s;
+
+      let distanceKm: number | null = null;
+      if (hasClientCoords && s.latitude != null && s.longitude != null) {
+        distanceKm = calculateHaversineDistance(lat!, lng!, s.latitude, s.longitude);
+      }
+
       return {
         ...rest,
         avgRating,
         reviewCount,
+        distanceKm,
       };
     });
+
+    if (hasClientCoords) {
+      mapped.sort((a, b) => {
+        if (a.distanceKm !== null && b.distanceKm !== null) {
+          return a.distanceKm - b.distanceKm;
+        }
+        if (a.distanceKm !== null) return -1;
+        if (b.distanceKm !== null) return 1;
+        return (b.reputationScore ?? 0) - (a.reputationScore ?? 0);
+      });
+    }
+
+    return mapped;
   }
 
   async findActiveStoreDetail(storeId: number) {
@@ -281,6 +306,8 @@ export class StoresService {
     const isBankNameChanged = dto.bankName && dto.bankName.trim() !== (store.partner?.bankName || '').trim();
     const isOpenTimeChanged = dto.openTime && dto.openTime.trim() !== (store.openTime || '').trim();
     const isCloseTimeChanged = dto.closeTime && dto.closeTime.trim() !== (store.closeTime || '').trim();
+    const isLatChanged = dto.latitude !== undefined && dto.latitude !== store.latitude;
+    const isLngChanged = dto.longitude !== undefined && dto.longitude !== store.longitude;
 
     const hasAnyChange =
       isStoreNameChanged ||
@@ -294,7 +321,9 @@ export class StoresService {
       isBankNumChanged ||
       isBankNameChanged ||
       isOpenTimeChanged ||
-      isCloseTimeChanged;
+      isCloseTimeChanged ||
+      isLatChanged ||
+      isLngChanged;
 
     if (!hasAnyChange) {
       throw new BadRequestException('Thông tin không có gì thay đổi so với hiện tại, không cần gửi yêu cầu cập nhật.');
@@ -311,6 +340,8 @@ export class StoresService {
           storeName: dto.storeName,
           province: dto.province,
           address: dto.address,
+          latitude: dto.latitude,
+          longitude: dto.longitude,
           phoneContact: dto.phoneContact,
           description: dto.description,
           storeImage: dto.storeImage,
@@ -333,6 +364,8 @@ export class StoresService {
         storeName: dto.storeName,
         province: dto.province,
         address: dto.address,
+        latitude: dto.latitude,
+        longitude: dto.longitude,
         phoneContact: dto.phoneContact,
         description: dto.description,
         storeImage: dto.storeImage,
@@ -391,6 +424,8 @@ export class StoresService {
           storeName: req.storeName,
           province: req.province,
           address: req.address,
+          ...(req.latitude !== null && { latitude: req.latitude }),
+          ...(req.longitude !== null && { longitude: req.longitude }),
           phoneContact: req.phoneContact,
           description: req.description,
           storeImage: req.storeImage,

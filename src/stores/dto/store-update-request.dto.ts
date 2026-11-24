@@ -18,6 +18,18 @@ export class CreateStoreUpdateRequestDto {
   @IsNotEmpty({ message: 'Địa chỉ không được để trống' })
   address: string;
 
+  @ApiPropertyOptional({ example: 16.0613692, description: 'Vĩ độ (latitude)' })
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  latitude?: number;
+
+  @ApiPropertyOptional({ example: 108.2199779, description: 'Kinh độ (longitude)' })
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  longitude?: number;
+
   @ApiProperty({ example: '0901234567' })
   @IsString()
   @IsNotEmpty({ message: 'Số điện thoại không được để trống' })

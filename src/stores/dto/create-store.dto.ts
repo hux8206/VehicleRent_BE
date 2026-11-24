@@ -20,6 +20,18 @@ export class CreateStoreDto {
   @IsNotEmpty()
   address: string;
 
+  @ApiPropertyOptional({ example: 16.0613692, description: 'Vĩ độ (latitude)' })
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  latitude?: number;
+
+  @ApiPropertyOptional({ example: 108.2199779, description: 'Kinh độ (longitude)' })
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  longitude?: number;
+
   @ApiProperty({ example: '0901234567' })
   @IsString()
   @IsNotEmpty()

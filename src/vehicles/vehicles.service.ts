@@ -6,6 +6,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { calculateHaversineDistance } from '../common/utils/geo.util';
 import { CreateVehicleModelDto } from './dto/create-vehicle-model.dto';
 import { UpdateVehicleModelDto } from './dto/update-vehicle-model.dto';
 import { CreateVehicleItemDto } from './dto/create-vehicle-item.dto';
@@ -329,23 +330,72 @@ export class VehiclesService {
       ...(storeId && { storeId }),
     };
 
-    const models = await this.prisma.vehicleModel.findMany({
-      where,
-      include: {
-        store: { select: { id: true, storeName: true, address: true, phoneContact: true, province: true, reputationScore: true } },
-        vehicleItems: {
-          select: { id: true, status: true },
-        },
-      },
-      orderBy: [
-        { store: { reputationScore: 'desc' } },
-        { id: 'desc' },
-      ],
-      skip,
-      take: limit,
-    });
+    const hasClientCoords = typeof dto.lat === 'number' && !isNaN(dto.lat) && typeof dto.lng === 'number' && !isNaN(dto.lng);
 
-    const total = await this.prisma.vehicleModel.count({ where });
+    let models: any[];
+    let total: number;
+
+    const storeSelect = {
+      id: true,
+      storeName: true,
+      address: true,
+      latitude: true,
+      longitude: true,
+      phoneContact: true,
+      province: true,
+      reputationScore: true,
+    };
+
+    if (hasClientCoords) {
+      const allMatchingModels = await this.prisma.vehicleModel.findMany({
+        where,
+        include: {
+          store: { select: storeSelect },
+          vehicleItems: {
+            select: { id: true, status: true },
+          },
+        },
+      });
+
+      total = allMatchingModels.length;
+
+      allMatchingModels.sort((a, b) => {
+        const distA =
+          a.store?.latitude != null && a.store?.longitude != null
+            ? calculateHaversineDistance(dto.lat!, dto.lng!, a.store.latitude, a.store.longitude)
+            : null;
+        const distB =
+          b.store?.latitude != null && b.store?.longitude != null
+            ? calculateHaversineDistance(dto.lat!, dto.lng!, b.store.latitude, b.store.longitude)
+            : null;
+
+        if (distA !== null && distB !== null) {
+          return distA - distB;
+        }
+        if (distA !== null) return -1;
+        if (distB !== null) return 1;
+        return (b.store?.reputationScore ?? 0) - (a.store?.reputationScore ?? 0);
+      });
+
+      models = allMatchingModels.slice(skip, skip + limit);
+    } else {
+      total = await this.prisma.vehicleModel.count({ where });
+      models = await this.prisma.vehicleModel.findMany({
+        where,
+        include: {
+          store: { select: storeSelect },
+          vehicleItems: {
+            select: { id: true, status: true },
+          },
+        },
+        orderBy: [
+          { store: { reputationScore: 'desc' } },
+          { id: 'desc' },
+        ],
+        skip,
+        take: limit,
+      });
+    }
 
     const requestStart = new Date(startTime);
     const requestEnd = new Date(endTime);
@@ -354,7 +404,7 @@ export class VehiclesService {
     const result = await Promise.all(
       models.map(async (model) => {
         // TotalActiveVehicleItems = xe không bị bảo dưỡng (status != 3)
-        const totalActiveItems = model.vehicleItems.filter((vi) => vi.status !== 3).length;
+        const totalActiveItems = model.vehicleItems.filter((vi: any) => vi.status !== 3).length;
 
         // BusyVehicleCount: tính tổng số lượng xe bận trùng khoảng thời gian (hỗ trợ đơn đặt nhiều xe)
         const busyAgg = await this.prisma.bookingDetail.aggregate({
@@ -415,6 +465,11 @@ export class VehiclesService {
             ? Number(storeReviewsAgg._avg.rateStar.toFixed(1))
             : 5.0;
 
+        let distanceKm: number | null = null;
+        if (hasClientCoords && model.store?.latitude != null && model.store?.longitude != null) {
+          distanceKm = calculateHaversineDistance(dto.lat!, dto.lng!, model.store.latitude, model.store.longitude);
+        }
+
         const { vehicleItems: _, ...modelData } = model;
         return {
           ...modelData,
@@ -422,7 +477,9 @@ export class VehiclesService {
             ...model.store,
             avgRating: storeAvgRating,
             reviewCount: storeReviewCount,
+            distanceKm,
           },
+          distanceKm,
           totalActiveItems,
           busyCount,
           availableCount,
