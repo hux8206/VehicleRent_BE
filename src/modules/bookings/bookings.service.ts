@@ -14,6 +14,41 @@ import * as bcrypt from 'bcryptjs';
 
 const COMMISSION_RATE = 0.1; // 10% hoa hồng sàn
 
+export interface PricingTier {
+  minDays: number;
+  maxDays: number | null;
+  pricePerDay: number;
+}
+
+/**
+ * Tính đơn giá thuê mỗi ngày dựa theo bảng giá bậc thang (Tiered Pricing)
+ * Fallback về baseRentPrice nếu không khớp mốc nào hoặc không có cấu hình.
+ */
+export function getTieredPricePerDay(
+  baseRentPrice: number,
+  pricingTiers: any,
+  dayRent: number,
+): number {
+  if (!Array.isArray(pricingTiers) || pricingTiers.length === 0) {
+    return baseRentPrice;
+  }
+  for (const tier of pricingTiers) {
+    const minDays = Number(tier.minDays);
+    const maxDays =
+      tier.maxDays !== null && tier.maxDays !== undefined && tier.maxDays !== ''
+        ? Number(tier.maxDays)
+        : null;
+    const price = Number(tier.pricePerDay);
+
+    if (minDays <= dayRent && (maxDays === null || dayRent <= maxDays)) {
+      if (price > 0) {
+        return price;
+      }
+    }
+  }
+  return baseRentPrice;
+}
+
 @Injectable()
 export class BookingsService {
   constructor(
@@ -152,11 +187,12 @@ export class BookingsService {
         );
       }
 
-      // ── 4. Tính tiền ──────────────────────────────────────────────────────
+      // ── 4. Tính tiền (Hỗ trợ Định giá bậc thang theo số ngày thuê) ─────────
       const diffHours = (requestEnd.getTime() - requestStart.getTime()) / (1000 * 60 * 60);
       const dayRent = Math.ceil(diffHours / 24);
-      const rentPrice = Number(model.rentPrice);
-      const rentAmount = dayRent * rentPrice * quantity;
+      const baseRentPrice = Number(model.rentPrice);
+      const pricePerUnit = getTieredPricePerDay(baseRentPrice, model.pricingTiers, dayRent);
+      const rentAmount = dayRent * pricePerUnit * quantity;
 
       // Đọc cấu hình sàn: Mức cọc tối thiểu (mặc định 15%) & Tỷ lệ hoa hồng sàn (mặc định 10%)
       const sysConfig = await tx.systemConfig.findFirst();
@@ -275,7 +311,7 @@ export class BookingsService {
       });
 
       // ── Tạo các BookingDetail tương ứng với số lượng xe đặt ───────────────
-      const rentPerUnitTotal = rentPrice * dayRent;
+      const rentPerUnitTotal = pricePerUnit * dayRent;
       for (let i = 0; i < quantity; i++) {
         await tx.bookingDetail.create({
           data: {
@@ -283,7 +319,7 @@ export class BookingsService {
             modelId,
             vehicleItemId: availableItems[i] ? availableItems[i].id : null,
             quantity: 1,
-            pricePerUnit: rentPrice,
+            pricePerUnit: pricePerUnit,
             subTotal: rentPerUnitTotal,
           },
         });
@@ -1087,11 +1123,13 @@ export class BookingsService {
       throw new BadRequestException('Thời gian trả xe phải sau thời gian nhận xe');
     }
 
-    // 4. Tính toán số ngày và tiền tệ (Cố định đơn giá theo niêm yết của dòng xe)
+    // 4. Tính toán số ngày và tiền tệ (Hỗ trợ định giá bậc thang theo số ngày thuê)
     const diffHours = (end.getTime() - start.getTime()) / (1000 * 60 * 60);
     const rentDays = Math.max(1, Math.ceil(diffHours / 24));
-    const rentPricePerDay = Number(vehicleItems[0].model.rentPrice);
-    const calculatedTotal = rentDays * rentPricePerDay * vehicleItems.length;
+    const model = vehicleItems[0].model;
+    const baseRentPrice = Number(model.rentPrice);
+    const pricePerUnit = getTieredPricePerDay(baseRentPrice, (model as any).pricingTiers, rentDays);
+    const calculatedTotal = rentDays * pricePerUnit * vehicleItems.length;
     const totalRentAmount = calculatedTotal;
     const depositAmount = dto.depositAmount !== undefined ? Number(dto.depositAmount) : 0;
 
@@ -1162,7 +1200,7 @@ export class BookingsService {
         },
       });
 
-      const subTotalPerItem = rentDays * rentPricePerDay;
+      const subTotalPerItem = rentDays * pricePerUnit;
       for (const item of vehicleItems) {
         await tx.bookingDetail.create({
           data: {
@@ -1170,7 +1208,7 @@ export class BookingsService {
             modelId: dto.modelId,
             vehicleItemId: item.id,
             quantity: 1,
-            pricePerUnit: rentPricePerDay,
+            pricePerUnit: pricePerUnit,
             subTotal: subTotalPerItem,
           },
         });

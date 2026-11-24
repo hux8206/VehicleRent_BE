@@ -38,4 +38,20 @@ export class CreateVehicleModelDto {
   @IsOptional()
   @IsArray()
   images?: string[];
+
+  @ApiPropertyOptional({
+    description: 'Bảng giá bậc thang theo số ngày thuê ({ minDays: number, maxDays: number | null, pricePerDay: number })',
+    example: [
+      { minDays: 1, maxDays: 3, pricePerDay: 150000 },
+      { minDays: 4, maxDays: 7, pricePerDay: 130000 },
+      { minDays: 8, maxDays: null, pricePerDay: 110000 },
+    ],
+  })
+  @IsOptional()
+  @IsArray()
+  pricingTiers?: Array<{
+    minDays: number;
+    maxDays: number | null;
+    pricePerDay: number;
+  }>;
 }

@@ -21,8 +21,64 @@ export class VehiclesService {
 
   // ─── PARTNER: VehicleModel CRUD ─────────────────────────────────────────────
 
+  validatePricingTiers(tiers: any) {
+    if (tiers === null || tiers === undefined) return;
+    if (!Array.isArray(tiers)) {
+      throw new BadRequestException('Bảng giá bậc thang phải là một danh sách các mốc');
+    }
+    if (tiers.length === 0) return;
+
+    for (const tier of tiers) {
+      if (typeof tier !== 'object' || tier === null) {
+        throw new BadRequestException('Mốc giá bậc thang không hợp lệ');
+      }
+      const minDays = Number(tier.minDays);
+      const pricePerDay = Number(tier.pricePerDay);
+      if (!Number.isInteger(minDays) || minDays < 1) {
+        throw new BadRequestException('Số ngày bắt đầu (Từ ngày) của mốc giá phải là số nguyên dương (>= 1)');
+      }
+      if (isNaN(pricePerDay) || pricePerDay <= 0) {
+        throw new BadRequestException('Đơn giá thuê mỗi ngày của từng mốc phải lớn hơn 0');
+      }
+      if (tier.maxDays !== null && tier.maxDays !== undefined && tier.maxDays !== '') {
+        const maxDays = Number(tier.maxDays);
+        if (!Number.isInteger(maxDays) || maxDays < minDays) {
+          throw new BadRequestException(`Số ngày kết thúc (${maxDays}) phải lớn hơn hoặc bằng số ngày bắt đầu (${minDays})`);
+        }
+      }
+    }
+
+    // Kiểm tra không chồng chéo khoảng ngày
+    const sorted = [...tiers].sort((a, b) => Number(a.minDays) - Number(b.minDays));
+    for (let i = 0; i < sorted.length; i++) {
+      const current = sorted[i];
+      const curMin = Number(current.minDays);
+      const curMax = current.maxDays !== null && current.maxDays !== undefined && current.maxDays !== ''
+        ? Number(current.maxDays)
+        : null;
+
+      if (i > 0) {
+        const prev = sorted[i - 1];
+        const prevMin = Number(prev.minDays);
+        const prevMax = prev.maxDays !== null && prev.maxDays !== undefined && prev.maxDays !== ''
+          ? Number(prev.maxDays)
+          : null;
+
+        if (prevMax === null) {
+          throw new BadRequestException(`Mốc [Từ ngày ${prevMin} trở lên] đã bao gồm tất cả các ngày sau đó, không thể thêm mốc [Từ ngày ${curMin}]`);
+        }
+        if (curMin <= prevMax) {
+          throw new BadRequestException(`Khoảng ngày bị chồng chéo: [${prevMin} - ${prevMax}] và [${curMin} - ${curMax || 'trở lên'}]`);
+        }
+      }
+    }
+  }
+
   async createModel(partnerId: number, dto: CreateVehicleModelDto) {
     await this.assertStoreOwnership(partnerId, dto.storeId);
+    if (dto.pricingTiers) {
+      this.validatePricingTiers(dto.pricingTiers);
+    }
     return this.prisma.vehicleModel.create({
       data: {
         storeId: dto.storeId,
@@ -32,6 +88,7 @@ export class VehiclesService {
         rentPrice: dto.rentPrice,
         specifications: dto.specifications,
         images: dto.images ? dto.images : undefined,
+        pricingTiers: dto.pricingTiers !== undefined ? (dto.pricingTiers as any) : undefined,
       },
     });
   }
@@ -79,12 +136,16 @@ export class VehiclesService {
     const model = await this.prisma.vehicleModel.findUnique({ where: { id: modelId } });
     if (!model) throw new NotFoundException('Dòng xe không tồn tại');
     await this.assertStoreOwnership(partnerId, model.storeId);
+    if (dto.pricingTiers !== undefined) {
+      this.validatePricingTiers(dto.pricingTiers);
+    }
 
     return this.prisma.vehicleModel.update({
       where: { id: modelId },
       data: {
         ...dto,
         images: dto.images !== undefined ? dto.images : undefined,
+        pricingTiers: dto.pricingTiers !== undefined ? (dto.pricingTiers as any) : undefined,
       },
     });
   }

@@ -85,6 +85,7 @@ model VehicleModel {
   brand          String  @db.VarChar(100)
   type           Int     // 0: Xe so, 1: Tay ga, 2: Con tay, 3: O to/Xe dien
   rentPrice      Decimal @db.Decimal(12, 2)
+  pricingTiers   Json?
   specifications String? @db.Text
   images         Json?
 
