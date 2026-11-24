@@ -953,11 +953,12 @@ export class BookingsService {
     const typeNames: Record<number, string> = {
       0: 'Xe số',
       1: 'Xe tay ga',
-      2: 'Côn tay',
+      2: 'Xe tay côn',
       3: 'Xe điện',
       4: 'Ô tô',
+      5: 'Ô tô điện',
     };
-    const vehicleCategoryDistribution = [0, 1, 2, 3, 4].map((type) => {
+    const vehicleCategoryDistribution = [0, 1, 2, 3, 4, 5].map((type) => {
       const modelsOfType = allModels.filter((m) => m.type === type);
       const items = modelsOfType.flatMap((m) => m.vehicleItems || []);
       const total = items.length;

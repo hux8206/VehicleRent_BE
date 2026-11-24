@@ -11,7 +11,7 @@ export class SearchVehiclesDto {
   @IsDateString()
   endTime: string;
 
-  @ApiPropertyOptional({ example: 1, description: '0: Xe số, 1: Tay ga, 2: Côn tay, 3: Ô tô/Xe điện' })
+  @ApiPropertyOptional({ example: 1, description: '0: Xe số, 1: Xe tay ga, 2: Xe tay côn, 3: Xe điện, 4: Ô tô, 5: Ô tô điện' })
   @IsOptional()
   @IsInt()
   @Type(() => Number)

@@ -18,7 +18,7 @@ export class CreateVehicleModelDto {
   @IsNotEmpty()
   brand: string;
 
-  @ApiProperty({ example: 1, description: '0: Xe số, 1: Tay ga, 2: Côn tay/PKL, 3: Xe điện/Ô tô' })
+  @ApiProperty({ example: 1, description: '0: Xe số, 1: Xe tay ga, 2: Xe tay côn, 3: Xe điện, 4: Ô tô, 5: Ô tô điện' })
   @IsInt()
   @Type(() => Number)
   type: number;
