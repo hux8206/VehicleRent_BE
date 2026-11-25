@@ -55,11 +55,14 @@ export class AuthService {
         },
       });
 
+      const sysConfig = await tx.systemConfig.findFirst();
+      const defaultCreditLimit = sysConfig ? Number(sysConfig.creditLimit) : 500000;
+
       await tx.partnerWallet.create({
         data: {
           partnerId: newUser.id,
           balance: 0,
-          creditLimit: 500000,
+          creditLimit: defaultCreditLimit,
           status: 1,
         },
       });

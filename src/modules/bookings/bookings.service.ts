@@ -278,8 +278,9 @@ export class BookingsService {
       const rand = Math.floor(Math.random() * 9000) + 1000;
       const bookingCode = `BK-${yyymm}-${rand}`;
 
-      // ── 6. Tạo Booking với holdExpiresAt = NOW() + 10 phút ───────────────
-      const holdExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
+      // ── 6. Tạo Booking với holdExpiresAt = NOW() + 10 phút (hoặc xác nhận ngay nếu 0đ cọc) ──
+      const isZeroDeposit = depositAmount <= 0;
+      const holdExpiresAt = isZeroDeposit ? null : new Date(Date.now() + 10 * 60 * 1000);
       const booking = await tx.booking.create({
         data: {
           bookingCode,
@@ -297,7 +298,7 @@ export class BookingsService {
           promotionCode: appliedPromoCode,
           discountAmount,
           holdExpiresAt,
-          status: 0, // PendingPayment
+          status: isZeroDeposit ? 1 : 0, // 1: Confirmed ngay nếu miễn cọc (0đ), 0: PendingPayment
         },
       });
 
@@ -345,22 +346,26 @@ export class BookingsService {
         data: {
           bookingId: booking.id,
           transactionRef,
-          paymentMethod: 1, // BankTransfer / VietQR
+          paymentMethod: isZeroDeposit ? 0 : 1, // 0: Miễn cọc, 1: BankTransfer / VietQR
           paymentType,
           amount: depositAmount,
-          paymentStatus: 0, // Pending
+          paymentStatus: isZeroDeposit ? 1 : 0, // 1: Paid ngay nếu 0đ, 0: Pending
+          ...(isZeroDeposit ? { paymentTime: new Date() } : {}),
         },
       });
 
       return {
         booking,
+        isZeroDeposit,
         payment: {
           transactionRef: payment.transactionRef,
           amount: payment.amount,
-          paymentMethod: 'VietQR / Bank Transfer',
+          paymentMethod: isZeroDeposit ? 'Miễn đặt cọc (0đ)' : 'VietQR / Bank Transfer',
         },
         holdExpiresAt,
-        message: `Giữ chỗ thành công! Vui lòng thanh toán trong 10 phút. Mã GD: ${transactionRef}`,
+        message: isZeroDeposit
+          ? `Đặt xe thành công (Miễn đặt cọc)! Đơn ${bookingCode} đã được xác nhận.`
+          : `Giữ chỗ thành công! Vui lòng thanh toán trong 10 phút. Mã GD: ${transactionRef}`,
       };
     },
     {
@@ -727,16 +732,20 @@ export class BookingsService {
           id: { not: booking.id },
         },
       });
-      const isFreeCommission = previousSuccessfulCount < 5 || Number(booking.commissionAmount) === 0;
-      const commission = isFreeCommission ? 0 : Number(booking.commissionAmount);
+      // Đọc cấu hình hoa hồng và hạn mức nợ mới nhất của Admin (Quyền cao nhất)
+      const sysConfig = await tx.systemConfig.findFirst();
+      const currentCommissionRate = sysConfig ? Number(sysConfig.commissionRate) / 100 : COMMISSION_RATE;
+      const isFreeCommission = previousSuccessfulCount < 5 || currentCommissionRate === 0;
+      const commission = isFreeCommission ? 0 : Math.round(Number(booking.rentAmount) * currentCommissionRate);
 
       if (!existingCommission) {
         const wallet = await tx.partnerWallet.findUnique({
           where: { partnerId: booking.store.partnerId },
         });
         if (wallet) {
+          const effectiveCreditLimit = sysConfig ? Number(sysConfig.creditLimit) : Number(wallet.creditLimit);
           if (commission === 0) {
-            // Ghi nhận lịch sử miễn phí hoa hồng sàn (0đ) cho đối tác mới
+            // Ghi nhận lịch sử miễn phí hoa hồng sàn (0đ)
             await tx.walletHistory.create({
               data: {
                 walletId: wallet.id,
@@ -745,15 +754,23 @@ export class BookingsService {
                 amount: 0,
                 balanceBefore: Number(wallet.balance),
                 balanceAfter: Number(wallet.balance),
-                description: `[Ưu đãi đối tác mới] Miễn 100% hoa hồng sàn đơn ${booking.bookingCode} (${Math.min(5, previousSuccessfulCount + 1)}/5)`,
+                description:
+                  previousSuccessfulCount < 5
+                    ? `[Ưu đãi đối tác mới] Miễn 100% hoa hồng sàn đơn ${booking.bookingCode} (${Math.min(5, previousSuccessfulCount + 1)}/5)`
+                    : `Miễn phí hoa hồng sàn đơn ${booking.bookingCode} (Cấu hình sàn 0%)`,
               },
             });
           } else {
             const balance = Number(wallet.balance);
             const newBalance = balance - commission;
+            if (newBalance < -effectiveCreditLimit) {
+              throw new BadRequestException(
+                `Số dư ví hiện tại (${balance.toLocaleString('vi-VN')}đ) không đủ để khấu trừ hoa hồng bàn giao xe (${commission.toLocaleString('vi-VN')}đ) theo hạn mức nợ tối đa (-${effectiveCreditLimit.toLocaleString('vi-VN')}đ). Vui lòng nạp thêm tiền vào ví!`,
+              );
+            }
             await tx.partnerWallet.update({
               where: { id: wallet.id },
-              data: { balance: newBalance },
+              data: { balance: newBalance, creditLimit: effectiveCreditLimit },
             });
             await tx.walletHistory.create({
               data: {
@@ -763,7 +780,7 @@ export class BookingsService {
                 amount: commission,
                 balanceBefore: balance,
                 balanceAfter: newBalance,
-                description: `Khấu trừ hoa hồng sàn đơn ${booking.bookingCode}`,
+                description: `Khấu trừ hoa hồng sàn (${Math.round(currentCommissionRate * 100)}%) đơn ${booking.bookingCode}`,
               },
             });
           }
@@ -772,7 +789,7 @@ export class BookingsService {
 
       return tx.booking.update({
         where: { id: bookingId },
-        data: { status: 3 }, // ActiveRental
+        data: { status: 3, commissionAmount: commission }, // ActiveRental
       });
     });
   }
@@ -1241,8 +1258,9 @@ export class BookingsService {
           where: { partnerId },
         });
         if (wallet) {
+          const effectiveCreditLimit = sysConfig ? Number(sysConfig.creditLimit) : Number(wallet.creditLimit);
           if (commissionAmount === 0) {
-            // Ưu đãi đối tác mới: ghi nhận 0đ hoa hồng
+            // Ưu đãi đối tác mới hoặc cấu hình 0%: ghi nhận 0đ hoa hồng
             await tx.walletHistory.create({
               data: {
                 walletId: wallet.id,
@@ -1251,15 +1269,22 @@ export class BookingsService {
                 amount: 0,
                 balanceBefore: Number(wallet.balance),
                 balanceAfter: Number(wallet.balance),
-                description: `[Ưu đãi đối tác mới] Miễn 100% hoa hồng sàn đơn tại quầy ${booking.bookingCode} (${Math.min(5, partnerSuccessfulBookingsCount + 1)}/5)`,
+                description: isFreeCommission
+                  ? `[Ưu đãi đối tác mới] Miễn 100% hoa hồng sàn đơn tại quầy ${booking.bookingCode} (${Math.min(5, partnerSuccessfulBookingsCount + 1)}/5)`
+                  : `Miễn phí hoa hồng sàn đơn tại quầy ${booking.bookingCode} (Cấu hình sàn 0%)`,
               },
             });
           } else {
             const balance = Number(wallet.balance);
             const newBalance = balance - commissionAmount;
+            if (newBalance < -effectiveCreditLimit) {
+              throw new BadRequestException(
+                `Số dư ví hiện tại (${balance.toLocaleString('vi-VN')}đ) không đủ để khấu trừ hoa hồng (${commissionAmount.toLocaleString('vi-VN')}đ) theo hạn mức nợ tối đa (-${effectiveCreditLimit.toLocaleString('vi-VN')}đ). Vui lòng nạp thêm tiền vào ví!`,
+              );
+            }
             await tx.partnerWallet.update({
               where: { id: wallet.id },
-              data: { balance: newBalance },
+              data: { balance: newBalance, creditLimit: effectiveCreditLimit },
             });
             await tx.walletHistory.create({
               data: {
@@ -1269,7 +1294,7 @@ export class BookingsService {
                 amount: commissionAmount,
                 balanceBefore: balance,
                 balanceAfter: newBalance,
-                description: `Khấu trừ hoa hồng sàn đơn tại quầy ${booking.bookingCode}`,
+                description: `Khấu trừ hoa hồng sàn (${Math.round(sysCommissionRate * 100)}%) đơn tại quầy ${booking.bookingCode}`,
               },
             });
           }

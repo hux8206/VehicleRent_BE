@@ -79,8 +79,16 @@ export class PaymentsService {
     if (!payment) throw new NotFoundException('Không tìm thấy thông tin thanh toán');
     if (payment.booking.customerId !== customerId)
       throw new ForbiddenException('Bạn không có quyền xem thông tin thanh toán này');
-    if (payment.paymentStatus === 1)
-      throw new BadRequestException('Đơn này đã được thanh toán');
+    if (payment.paymentStatus === 1 || Number(payment.amount) <= 0) {
+      return {
+        bookingId,
+        transactionRef: payment.transactionRef,
+        amount: 0,
+        isZeroDeposit: true,
+        paid: true,
+        message: 'Đơn này đã được thanh toán hoặc miễn cọc (0đ)',
+      };
+    }
 
     // Kiểm tra cache để tránh gọi lặp lại PayOS bị lỗi "Đơn thanh toán đã tồn tại"
     const cached = this.bookingPaymentCache.get(payment.id);
@@ -491,13 +499,16 @@ export class PaymentsService {
       `[Flow5-FIFO] Có ${waitingBookings.length} đơn WaitingQueue của Partner #${partnerId}`,
     );
 
+    const sysConfig = await tx.systemConfig.findFirst();
+    const effectiveCreditLimit = sysConfig ? Number(sysConfig.creditLimit) : creditLimit;
+
     let runningBalance = currentBalance;
 
     for (const booking of waitingBookings) {
       const commission = Number(booking.commissionAmount);
 
       // Kiểm tra còn đủ hạn mức không
-      if (runningBalance - commission < -creditLimit) {
+      if (runningBalance - commission < -effectiveCreditLimit) {
         this.logger.log(
           `[Flow5-FIFO] Dừng tại Booking #${booking.id}: không đủ hạn mức. Break.`,
         );

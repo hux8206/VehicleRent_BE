@@ -434,16 +434,20 @@ export class StoresService {
         },
       });
 
-      // 2. Update rental policy
+      // 2. Update rental policy (đảm bảo luôn >= minDepositPercent của Admin)
+      const sysConfig = await tx.systemConfig.findFirst();
+      const minDeposit = sysConfig ? Number(sysConfig.minDepositPercent) : 15;
+      const effectiveDeposit = Math.max(minDeposit, Number(req.depositPercent));
+
       await tx.rentalPolicy.upsert({
         where: { storeId: req.storeId },
         create: {
           storeId: req.storeId,
-          depositPercent: req.depositPercent,
+          depositPercent: effectiveDeposit,
           cancelRule: req.cancelRule,
         },
         update: {
-          depositPercent: req.depositPercent,
+          depositPercent: effectiveDeposit,
           cancelRule: req.cancelRule,
         },
       });

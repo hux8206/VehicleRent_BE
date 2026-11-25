@@ -69,6 +69,19 @@ export class SystemConfigService {
       this.logger.log(`Đồng bộ creditLimit = ${dto.creditLimit}đ cho toàn bộ PartnerWallet`);
     }
 
+    // Nếu thay đổi mức cọc tối thiểu minDepositPercent, các cửa hàng có mức cọc thấp hơn sẽ tự động được nâng lên tối thiểu bằng quy định mới
+    if (dto.minDepositPercent !== undefined && dto.minDepositPercent > 0) {
+      const raised = await this.prisma.rentalPolicy.updateMany({
+        where: { depositPercent: { lt: dto.minDepositPercent } },
+        data: { depositPercent: dto.minDepositPercent },
+      });
+      if (raised.count > 0) {
+        this.logger.log(
+          `Nâng mức cọc tối thiểu lên ${dto.minDepositPercent}% cho ${raised.count} chi nhánh có cấu hình cũ thấp hơn`,
+        );
+      }
+    }
+
     this.logger.log(
       `Cập nhật SystemConfig thành công: Hoa hồng=${Number(updated.commissionRate)}%, Hạn mức nợ=${Number(updated.creditLimit)}đ, Cọc tối thiểu=${Number(updated.minDepositPercent)}%`,
     );
