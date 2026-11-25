@@ -1,10 +1,11 @@
 import { Logger } from '@nestjs/common';
 import { Resend } from 'resend';
 
-const logger = new Logger('MailUtil');
+const logger = new Logger('NotificationUtil');
 
 export interface NewBookingNotificationPayload {
   toEmail: string;
+  telegramChatId?: string | null;
   partnerName?: string | null;
   storeName: string;
   bookingCode: string;
@@ -22,7 +23,7 @@ export interface NewBookingNotificationPayload {
   deliveryAddress?: string | null;
 }
 
-function escapeHtml(value: string | number | null | undefined): string {
+export function escapeHtml(value: string | number | null | undefined): string {
   const str = String(value ?? '');
   return str
     .replace(/&/g, '&amp;')
@@ -46,6 +47,99 @@ function formatVnDateTime(date: Date): string {
   } catch {
     return date.toISOString();
   }
+}
+
+/**
+ * Gửi tin nhắn qua Telegram Bot API (sendMessage).
+ * Đọc token từ process.env.TELEGRAM_BOT_TOKEN.
+ */
+export async function sendTelegramMessage(
+  chatId: string,
+  text: string,
+): Promise<boolean> {
+  const cleanChatId = chatId?.trim();
+  if (!cleanChatId) return false;
+
+  const botToken = process.env.TELEGRAM_BOT_TOKEN;
+  if (!botToken) {
+    logger.warn(
+      `⚠️ [Telegram] Chưa cấu hình TELEGRAM_BOT_TOKEN. Bỏ qua gửi tin nhắn tới chatId=${cleanChatId}.`,
+    );
+    return false;
+  }
+
+  try {
+    const res = await fetch(
+      `https://api.telegram.org/bot${botToken}/sendMessage`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: cleanChatId,
+          text,
+          parse_mode: 'HTML',
+        }),
+      },
+    );
+
+    const data: any = await res.json().catch(() => null);
+    if (!res.ok || !data?.ok) {
+      logger.error(
+        `❌ [Telegram] Gửi tin nhắn tới chatId=${cleanChatId} thất bại (HTTP ${res.status}): ${JSON.stringify(data)}`,
+      );
+      return false;
+    }
+
+    logger.log(
+      `📲 [Telegram] Đã gửi tin nhắn thành công tới chatId=${cleanChatId} (message_id=${data?.result?.message_id})`,
+    );
+    return true;
+  } catch (err: any) {
+    logger.error(
+      `❌ [Telegram] Lỗi ngoại lệ khi gửi tin nhắn tới chatId=${cleanChatId}: ${err?.message || err}`,
+    );
+    return false;
+  }
+}
+
+/**
+ * Gửi thông báo đơn đặt xe mới qua Telegram tới chi nhánh (nếu đã kết nối telegramChatId).
+ */
+export async function sendPartnerNewBookingTelegram(
+  payload: NewBookingNotificationPayload,
+): Promise<void> {
+  const chatId = payload.telegramChatId?.trim();
+  if (!chatId) {
+    return;
+  }
+
+  const startStr = formatVnDateTime(new Date(payload.startTime));
+  const endStr = formatVnDateTime(new Date(payload.endTime));
+  const depositStr = `${Math.round(payload.depositAmount).toLocaleString('vi-VN')} VNĐ`;
+  const rentStr = `${Math.round(payload.rentAmount).toLocaleString('vi-VN')} VNĐ`;
+
+  const lines = [
+    `🔔 <b>ĐƠN ĐẶT XE MỚI ĐÃ XÁC NHẬN</b>`,
+    `🏪 Cửa hàng: <b>${escapeHtml(payload.storeName)}</b>`,
+    payload.sourceLabel ? `📌 Hình thức: <i>${escapeHtml(payload.sourceLabel)}</i>` : '',
+    ``,
+    `🆔 Mã đơn: <code>${escapeHtml(payload.bookingCode)}</code>`,
+    `🛵 Dòng xe: <b>${escapeHtml(payload.vehicleName)}</b>`,
+    `🔢 Số lượng: <b>${escapeHtml(payload.quantity)} xe</b> (${escapeHtml(payload.dayRent)} ngày)`,
+    `📅 Nhận xe: <b>${escapeHtml(startStr)}</b>`,
+    `🏁 Trả xe: <b>${escapeHtml(endStr)}</b>`,
+    `👤 Khách hàng: <b>${escapeHtml(payload.customerName)}</b>`,
+    `📞 SĐT: <b>${escapeHtml(payload.customerPhone || 'Chưa cập nhật')}</b>`,
+    payload.pickupType === 1 && payload.deliveryAddress
+      ? `📍 Giao tận nơi: ${escapeHtml(payload.deliveryAddress)}`
+      : '',
+    `💰 Tiền cọc / đã thu: <b>${escapeHtml(depositStr)}</b> (Tổng thuê: ${escapeHtml(rentStr)})`,
+  ].filter((line) => line !== undefined);
+
+  logger.log(
+    `📤 [Telegram] Đang gửi thông báo đơn ${payload.bookingCode} tới Store "${payload.storeName}" (chatId=${chatId})...`,
+  );
+  await sendTelegramMessage(chatId, lines.join('\n'));
 }
 
 /**
@@ -199,4 +293,16 @@ export async function sendPartnerNewBookingEmail(
       `❌ [Resend] Lỗi ngoại lệ khi gửi email đơn mới ${payload.bookingCode} tới ${email}: ${err?.message || JSON.stringify(err)}`,
     );
   }
+}
+
+/**
+ * Gửi thông báo đa kênh (Email qua Resend + Telegram Bot) cho chi nhánh cửa hàng khi có đơn mới xác nhận.
+ */
+export async function notifyPartnerNewBooking(
+  payload: NewBookingNotificationPayload,
+): Promise<void> {
+  await Promise.allSettled([
+    sendPartnerNewBookingEmail(payload),
+    sendPartnerNewBookingTelegram(payload),
+  ]);
 }

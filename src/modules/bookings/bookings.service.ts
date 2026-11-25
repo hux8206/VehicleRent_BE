@@ -11,7 +11,7 @@ import { CancelBookingDto } from './dto/cancel-booking.dto';
 import { CreateWalkInBookingDto } from './dto/create-walkin-booking.dto';
 import { PaymentsService } from '../payments/payments.service';
 import {
-  sendPartnerNewBookingEmail,
+  notifyPartnerNewBooking,
   NewBookingNotificationPayload,
 } from '../../common/utils/mail.util';
 import * as bcrypt from 'bcryptjs';
@@ -365,7 +365,8 @@ export class BookingsService {
           select: { fullName: true, phone: true },
         });
         _notifyPayload = {
-          toEmail: (model.store as any).notifyEmail || model.store.partner?.email || '',
+          toEmail: model.store.notifyEmail || model.store.partner?.email || '',
+          telegramChatId: model.store.telegramChatId,
           partnerName: model.store.partner?.fullName,
           storeName: model.store.storeName,
           bookingCode: booking.bookingCode,
@@ -406,7 +407,7 @@ export class BookingsService {
 
     const { _notifyPayload, ...response } = txResult;
     if (_notifyPayload) {
-      await sendPartnerNewBookingEmail(_notifyPayload);
+      await notifyPartnerNewBooking(_notifyPayload);
     }
     return response;
   }
@@ -1344,8 +1345,9 @@ export class BookingsService {
       return booking;
     });
 
-    await sendPartnerNewBookingEmail({
-      toEmail: (store as any).notifyEmail || store.partner?.email || '',
+    await notifyPartnerNewBooking({
+      toEmail: store.notifyEmail || store.partner?.email || '',
+      telegramChatId: store.telegramChatId,
       partnerName: store.partner?.fullName,
       storeName: store.storeName,
       bookingCode: createdBooking.bookingCode,

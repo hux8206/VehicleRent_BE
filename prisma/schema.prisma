@@ -54,6 +54,8 @@ model Store {
   openTime        String? @default("07:00") @db.VarChar(10)
   closeTime       String? @default("21:00") @db.VarChar(10)
   reputationScore Int     @default(100)
+  telegramChatId  String? @db.VarChar(100)
+  notifyEmail     String? @db.VarChar(255)
 
   partner       User           @relation(fields: [partnerId], references: [id])
   rentalPolicy  RentalPolicy?

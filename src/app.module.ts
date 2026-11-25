@@ -12,6 +12,7 @@ import { SystemConfigModule } from './modules/system-config/system-config.module
 import { PromotionsModule } from './modules/promotions/promotions.module';
 import { FeedbacksModule } from './modules/feedbacks/feedbacks.module';
 import { JobsModule } from './jobs/jobs.module';
+import { TelegramModule } from './modules/telegram/telegram.module';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 
@@ -37,6 +38,7 @@ import { AppService } from './app.service';
     PromotionsModule,
     FeedbacksModule,
     JobsModule,
+    TelegramModule,
   ],
   controllers: [AppController],
   providers: [

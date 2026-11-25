@@ -54,6 +54,8 @@ export class StoresService {
           storeImage: dto.storeImage,
           openTime: dto.openTime || '07:00',
           closeTime: dto.closeTime || '21:00',
+          telegramChatId: dto.telegramChatId?.trim() || null,
+          notifyEmail: dto.notifyEmail?.trim() || null,
           status: STORE_STATUS.PENDING,
         },
       });
@@ -97,7 +99,14 @@ export class StoresService {
 
   async update(partnerId: number, storeId: number, dto: UpdateStoreDto) {
     await this.assertOwnership(partnerId, storeId);
-    return this.prisma.store.update({ where: { id: storeId }, data: dto });
+    const data: any = { ...dto };
+    if (dto.telegramChatId !== undefined) {
+      data.telegramChatId = dto.telegramChatId?.trim() || null;
+    }
+    if (dto.notifyEmail !== undefined) {
+      data.notifyEmail = dto.notifyEmail?.trim() || null;
+    }
+    return this.prisma.store.update({ where: { id: storeId }, data });
   }
 
   async updateStoreStatus(partnerId: number, storeId: number, status: number) {

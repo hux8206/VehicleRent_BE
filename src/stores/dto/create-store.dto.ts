@@ -93,5 +93,15 @@ export class CreateStoreDto {
   @IsOptional()
   @IsString()
   bankName?: string;
+
+  @ApiPropertyOptional({ example: '123456789', description: 'Telegram Chat ID nhận thông báo đơn' })
+  @IsOptional()
+  @IsString()
+  telegramChatId?: string;
+
+  @ApiPropertyOptional({ example: 'nhaxe@gmail.com', description: 'Email nhận thông báo đơn của chi nhánh' })
+  @IsOptional()
+  @IsString()
+  notifyEmail?: string;
 }
 

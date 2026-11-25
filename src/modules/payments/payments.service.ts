@@ -11,7 +11,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { PayosService } from './payos.service';
 import { DepositWalletDto } from './dto/payment.dto';
 import {
-  sendPartnerNewBookingEmail,
+  notifyPartnerNewBooking,
   NewBookingNotificationPayload,
 } from '../../common/utils/mail.util';
 
@@ -417,12 +417,13 @@ export class PaymentsService {
       const totalQuantity = booking.bookingDetails.reduce((sum, d) => sum + (d.quantity || 1), 0) || 1;
       const firstModel = booking.bookingDetails[0]?.model;
       const vehicleName = firstModel ? `${firstModel.name} (${firstModel.brand})` : 'Xe thuê';
-      const toEmail = (booking.store as any).notifyEmail || booking.store.partner?.email || '';
+      const toEmail = booking.store.notifyEmail || booking.store.partner?.email || '';
 
       return {
         success: true,
         notifyPayload: {
           toEmail,
+          telegramChatId: booking.store.telegramChatId,
           partnerName: booking.store.partner?.fullName,
           storeName: booking.store.storeName,
           bookingCode: booking.bookingCode,
@@ -443,7 +444,7 @@ export class PaymentsService {
     });
 
     if (txResult.notifyPayload) {
-      await sendPartnerNewBookingEmail(txResult.notifyPayload);
+      await notifyPartnerNewBooking(txResult.notifyPayload);
     }
 
     return { success: txResult.success };
