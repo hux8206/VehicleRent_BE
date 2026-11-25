@@ -10,6 +10,10 @@ import { CreateBookingDto } from './dto/create-booking.dto';
 import { CancelBookingDto } from './dto/cancel-booking.dto';
 import { CreateWalkInBookingDto } from './dto/create-walkin-booking.dto';
 import { PaymentsService } from '../payments/payments.service';
+import {
+  sendPartnerNewBookingEmail,
+  NewBookingNotificationPayload,
+} from '../../common/utils/mail.util';
 import * as bcrypt from 'bcryptjs';
 
 const COMMISSION_RATE = 0.1; // 10% hoa hồng sàn
@@ -79,7 +83,7 @@ export class BookingsService {
       throw new BadRequestException('Thời gian trả xe phải sau thời gian nhận xe. Vui lòng chọn lại ngày trả xe.');
     }
 
-    return this.prisma.$transaction(
+    const txResult = await this.prisma.$transaction(
       async (tx) => {
         // Khóa bi quan (Pessimistic Row-level Lock): Chống race-condition khi nhiều khách cùng bấm đặt 1 xe
         await tx.$executeRaw`SELECT id FROM vehicle_models WHERE id = ${modelId} FOR UPDATE`;
@@ -91,7 +95,7 @@ export class BookingsService {
           store: {
             include: {
               rentalPolicy: true,
-              partner: { select: { id: true, status: true } },
+              partner: { select: { id: true, status: true, email: true, fullName: true } },
             },
           },
         },
@@ -354,6 +358,32 @@ export class BookingsService {
         },
       });
 
+      let _notifyPayload: NewBookingNotificationPayload | undefined;
+      if (isZeroDeposit) {
+        const customerInfo = await tx.user.findUnique({
+          where: { id: customerId },
+          select: { fullName: true, phone: true },
+        });
+        _notifyPayload = {
+          toEmail: (model.store as any).notifyEmail || model.store.partner?.email || '',
+          partnerName: model.store.partner?.fullName,
+          storeName: model.store.storeName,
+          bookingCode: booking.bookingCode,
+          vehicleName: `${model.name} (${model.brand})`,
+          quantity,
+          startTime: booking.startTime,
+          endTime: booking.endTime,
+          dayRent: Number(booking.dayRent),
+          customerName: customerInfo?.fullName || 'Khách hàng',
+          customerPhone: customerInfo?.phone || '',
+          depositAmount: 0,
+          rentAmount: Number(booking.rentAmount),
+          sourceLabel: 'Đặt trực tuyến (Miễn đặt cọc 0đ)',
+          pickupType: booking.pickupType,
+          deliveryAddress: booking.deliveryAddress,
+        };
+      }
+
       return {
         booking,
         isZeroDeposit,
@@ -366,12 +396,19 @@ export class BookingsService {
         message: isZeroDeposit
           ? `Đặt xe thành công (Miễn đặt cọc)! Đơn ${bookingCode} đã được xác nhận.`
           : `Giữ chỗ thành công! Vui lòng thanh toán trong 10 phút. Mã GD: ${transactionRef}`,
+        _notifyPayload,
       };
     },
     {
       maxWait: 10000,
       timeout: 20000,
     });
+
+    const { _notifyPayload, ...response } = txResult;
+    if (_notifyPayload) {
+      await sendPartnerNewBookingEmail(_notifyPayload);
+    }
+    return response;
   }
 
   /** Lấy danh sách đơn thuê của Customer */
@@ -1095,7 +1132,10 @@ export class BookingsService {
     // 1. Kiểm tra quyền sở hữu chi nhánh
     const store = await this.prisma.store.findUnique({
       where: { id: dto.storeId },
-      include: { rentalPolicy: true },
+      include: {
+        rentalPolicy: true,
+        partner: { select: { email: true, fullName: true } },
+      },
     });
     if (!store) throw new NotFoundException('Chi nhánh không tồn tại');
     if (store.partnerId !== partnerId) {
@@ -1201,7 +1241,7 @@ export class BookingsService {
     const newVehicleStatus = handoverNow ? 2 : 1; // 2: Rented, 1: Reserved
     const bookingCode = `VR-WALK-${Date.now().toString().slice(-6)}-${Math.floor(100 + Math.random() * 900)}`;
 
-    return this.prisma.$transaction(async (tx) => {
+    const createdBooking = await this.prisma.$transaction(async (tx) => {
       const booking = await tx.booking.create({
         data: {
           bookingCode,
@@ -1303,6 +1343,25 @@ export class BookingsService {
 
       return booking;
     });
+
+    await sendPartnerNewBookingEmail({
+      toEmail: (store as any).notifyEmail || store.partner?.email || '',
+      partnerName: store.partner?.fullName,
+      storeName: store.storeName,
+      bookingCode: createdBooking.bookingCode,
+      vehicleName: `${model.name} (${model.brand})`,
+      quantity: vehicleItems.length,
+      startTime: createdBooking.startTime,
+      endTime: createdBooking.endTime,
+      dayRent: Number(createdBooking.dayRent),
+      customerName: dto.customerName.trim(),
+      customerPhone: phoneClean,
+      depositAmount: handoverNow ? Number(createdBooking.rentAmount) : Number(createdBooking.depositAmount),
+      rentAmount: Number(createdBooking.rentAmount),
+      sourceLabel: handoverNow ? 'Tạo đơn tại quầy (Đã bàn giao)' : 'Tạo đơn tại quầy (Giữ chỗ)',
+    });
+
+    return createdBooking;
   }
 
   // ─── KHÁCH KHÔNG ĐẾN NHẬN XE & HỦY ĐƠN (CHỨC NĂNG 1) ─────────────────────────────

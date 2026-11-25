@@ -10,6 +10,10 @@ import * as QRCode from 'qrcode';
 import { PrismaService } from '../../prisma/prisma.service';
 import { PayosService } from './payos.service';
 import { DepositWalletDto } from './dto/payment.dto';
+import {
+  sendPartnerNewBookingEmail,
+  NewBookingNotificationPayload,
+} from '../../common/utils/mail.util';
 
 /** Hoa hồng sàn 10% */
 const COMMISSION_RATE = 0.1;
@@ -278,7 +282,10 @@ export class PaymentsService {
     orderCode: number,
     webhookData?: any,
   ): Promise<{ success: boolean }> {
-    return this.prisma.$transaction(async (tx) => {
+    const txResult = await this.prisma.$transaction(async (tx): Promise<{
+      success: boolean;
+      notifyPayload?: NewBookingNotificationPayload;
+    }> => {
       // Tìm payment: theo id gốc hoặc orderCode phân rã hoặc transactionRef
       let payment = await tx.payment.findUnique({ where: { id: orderCode } });
       if (!payment && orderCode >= 1000) {
@@ -307,10 +314,22 @@ export class PaymentsService {
         data: { paymentStatus: 1, paymentTime: new Date() },
       });
 
-      // ── Lấy Booking kèm store ──────────────────────────────────────────────
+      // ── Lấy Booking kèm store, partner, customer & model ──────────────────
       const booking = await tx.booking.findUnique({
         where: { id: payment.bookingId },
-        include: { store: true },
+        include: {
+          store: {
+            include: {
+              partner: { select: { email: true, fullName: true } },
+            },
+          },
+          customer: { select: { fullName: true, phone: true } },
+          bookingDetails: {
+            include: {
+              model: { select: { name: true, brand: true } },
+            },
+          },
+        },
       });
       if (!booking) return { success: true };
 
@@ -395,8 +414,39 @@ export class PaymentsService {
         `[Flow3] ✅ Booking #${booking.id} → Confirmed. Đã cộng ${paidAmount}đ vào ví Partner ${booking.store.partnerId}. Ví: ${balance} → ${newBalance}`,
       );
 
-      return { success: true };
+      const totalQuantity = booking.bookingDetails.reduce((sum, d) => sum + (d.quantity || 1), 0) || 1;
+      const firstModel = booking.bookingDetails[0]?.model;
+      const vehicleName = firstModel ? `${firstModel.name} (${firstModel.brand})` : 'Xe thuê';
+      const toEmail = (booking.store as any).notifyEmail || booking.store.partner?.email || '';
+
+      return {
+        success: true,
+        notifyPayload: {
+          toEmail,
+          partnerName: booking.store.partner?.fullName,
+          storeName: booking.store.storeName,
+          bookingCode: booking.bookingCode,
+          vehicleName,
+          quantity: totalQuantity,
+          startTime: booking.startTime,
+          endTime: booking.endTime,
+          dayRent: Number(booking.dayRent),
+          customerName: booking.customer?.fullName || 'Khách hàng',
+          customerPhone: booking.customer?.phone || '',
+          depositAmount: Number(booking.depositAmount),
+          rentAmount: Number(booking.rentAmount),
+          sourceLabel: 'Thanh toán trực tuyến VietQR',
+          pickupType: booking.pickupType,
+          deliveryAddress: booking.deliveryAddress,
+        },
+      };
     });
+
+    if (txResult.notifyPayload) {
+      await sendPartnerNewBookingEmail(txResult.notifyPayload);
+    }
+
+    return { success: txResult.success };
   }
 
   /**
